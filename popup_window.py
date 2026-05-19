@@ -12,8 +12,8 @@ from PyQt6.QtCharts import (
     QStackedBarSeries,
     QValueAxis,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter
+from PyQt6.QtCore import QMargins, Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -134,13 +134,22 @@ class PopupWindow(QWidget):
         v.addLayout(seg_row)
         self._window_group.idClicked.connect(self._on_window_clicked)
 
-        # Chart
+        # Chart -- aggressively style away QtCharts' default dark frame /
+        # background and reserve a left margin so the Y-axis labels never
+        # ellipsize into "...".
         self._chart = QChart()
         self._chart.setBackgroundRoundness(0)
+        self._chart.setBackgroundBrush(QBrush(QColor("white")))
+        self._chart.setBackgroundPen(QPen(Qt.PenStyle.NoPen))
+        self._chart.setMargins(QMargins(8, 4, 8, 4))
+        self._chart.layout().setContentsMargins(0, 0, 0, 0)
         self._chart.legend().setVisible(True)
         self._chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
+        self._chart.legend().setLabelColor(QColor("#0f172a"))
         self._chart_view = QChartView(self._chart)
         self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._chart_view.setFrameShape(QFrame.Shape.NoFrame)
+        self._chart_view.setStyleSheet("QChartView { background: white; border: none; }")
         self._chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         v.addWidget(self._chart_view, 1)
 
@@ -241,16 +250,17 @@ class PopupWindow(QWidget):
 
         # Pick label style based on count so they fit horizontally.
         n = len(buckets)
-        if n <= 7:
-            label_attr = "label"
+        is_day = isinstance(buckets[0], DayBucket) if buckets else False
+        if n <= 7 and is_day:
+            label_attr = "short_label"  # "5/13" -- weekday eats too much width
             stride = 1
         elif n <= 14:
             label_attr = "short_label"
             stride = 1
         else:
-            # 30-day daily or 24-hour: thin labels to every other / every Nth.
-            label_attr = "short_label" if isinstance(buckets[0], DayBucket) else "label"
-            stride = max(1, n // 10)
+            # 30-day daily or 24-hour: thin labels to every ~Nth.
+            label_attr = "short_label" if is_day else "label"
+            stride = max(1, n // 8)
 
         categories: list[str] = []
         for idx, b in enumerate(buckets):
@@ -270,15 +280,21 @@ class PopupWindow(QWidget):
         ax_x = QBarCategoryAxis()
         ax_x.append(categories)
         ax_x.setLabelsFont(QFont("Segoe UI", 9))
+        ax_x.setLabelsColor(QColor("#0f172a"))
+        ax_x.setGridLineVisible(False)
         ax_y = QValueAxis()
-        ax_y.setLabelFormat(f"%.1f{unit}" if unit else "%d")
+        # Short label format ("6M" instead of "6.0M") + small tick count so
+        # the labels stay short and never ellipsize.
+        ax_y.setLabelFormat(f"%g{unit}" if unit else "%d")
         scaled_max = (max_total / scale) if scale else 0
         ax_y.setRange(0, max(scaled_max * 1.1, 1.0))
+        ax_y.setTickCount(5)
         ax_y.applyNiceNumbers()
         ax_y.setLabelsFont(QFont("Segoe UI", 9))
-        if unit:
-            ax_y.setTitleText(f"Tokens ({unit})")
-            ax_y.setTitleFont(QFont("Segoe UI", 9))
+        ax_y.setLabelsColor(QColor("#0f172a"))
+        # Bump min-label-width via a wider min size hint isn't supported by
+        # QValueAxis directly; instead we reserved chart.margins(left=8) plus
+        # the layout naturally grows the axis area when labels are added.
         self._chart.addAxis(ax_x, Qt.AlignmentFlag.AlignBottom)
         self._chart.addAxis(ax_y, Qt.AlignmentFlag.AlignLeft)
         stacked.attachAxis(ax_x)
