@@ -20,10 +20,15 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Build TokenTray (onedir)
+      - name: Install Inno Setup
         shell: pwsh
         run: |
-          .\build.ps1 -Python "${{ env.pythonLocation }}\python.exe" -Clean -Mode onedir
+          choco install innosetup -y --no-progress
+
+      - name: Build TokenTray (onedir + installer)
+        shell: pwsh
+        run: |
+          .\build.ps1 -Python "${{ env.pythonLocation }}\python.exe" -Clean -Installer
 
       - name: Compute version
         id: ver
@@ -33,14 +38,23 @@ jobs:
           if (-not $tag.StartsWith("v")) { $tag = "v0.0.0-dev" }
           "version=$tag" >> $env:GITHUB_OUTPUT
 
-      - name: Package zip + hash
+      - name: Package zip + hashes
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
+          $bare = $v.TrimStart("v")
+          # Rename installer to match tag (the .iss has its own version string;
+          # rename so file matches the tag in the release).
+          $existing = Get-ChildItem "dist\TokenTray-Setup-*.exe" | Select-Object -First 1
+          if ($existing -and ($existing.Name -ne "TokenTray-Setup-$bare.exe")) {
+              Move-Item $existing.FullName "dist\TokenTray-Setup-$bare.exe" -Force
+          }
           $zip = "dist\TokenTray-$v-win64.zip"
           Compress-Archive -Path "dist\TokenTray\*" -DestinationPath $zip -Force
-          $h = (Get-FileHash $zip -Algorithm SHA256).Hash
-          "$h  TokenTray-$v-win64.zip" | Out-File -Encoding ASCII "$zip.sha256.txt"
+          foreach ($f in @("dist\TokenTray-Setup-$bare.exe", $zip)) {
+              $h = (Get-FileHash $f -Algorithm SHA256).Hash
+              "$h  $(Split-Path $f -Leaf)" | Out-File -Encoding ASCII "$f.sha256.txt"
+          }
           Get-ChildItem dist -File
 
       - name: Upload build artifact
@@ -48,6 +62,8 @@ jobs:
         with:
           name: TokenTray-${{ steps.ver.outputs.version }}
           path: |
+            dist/TokenTray-Setup-*.exe
+            dist/TokenTray-Setup-*.exe.sha256.txt
             dist/TokenTray-*.zip
             dist/TokenTray-*.zip.sha256.txt
 
@@ -56,6 +72,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/TokenTray-Setup-*.exe
+            dist/TokenTray-Setup-*.exe.sha256.txt
             dist/TokenTray-*.zip
             dist/TokenTray-*.zip.sha256.txt
           generate_release_notes: true

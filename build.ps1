@@ -8,6 +8,7 @@
 param(
     [string]$Python = "",
     [switch]$Clean,
+    [switch]$Installer,
     [ValidateSet("onefile", "onedir")]
     [string]$Mode = "onedir"
 )
@@ -20,7 +21,8 @@ Set-Location $here
 # Note: PyInstaller --onefile is unreliable across Python versions because
 # Defender real-time protection intercepts the temp-extracted DLLs and the
 # resulting integrity-check failure surfaces as STATUS_INVALID_IMAGE_HASH
-# ("Bad Image" dialog). We default to --onedir for distribution and zip it.
+# ("Bad Image" dialog). We default to --onedir for distribution and either
+# zip it or wrap it with Inno Setup (-Installer).
 if (-not $Python) {
     $candidates = @(
         "C:\PythonEnvs\TokenUsageTray-build312\Scripts\python.exe",
@@ -80,5 +82,30 @@ if ($Mode -eq "onefile") {
     }
     $bytes = (Get-ChildItem $dir -Recurse | Measure-Object Length -Sum).Sum
     $size = [math]::Round($bytes / 1MB, 1)
-    Write-Host "Built $dir\ ($size MB across $(Get-ChildItem $dir -Recurse -File | Measure-Object).Count files)"
+    Write-Host "Built $dir\ ($size MB)"
+}
+
+if ($Installer) {
+    if ($Mode -ne "onedir") {
+        Write-Error "-Installer requires -Mode onedir (we wrap dist\TokenTray\)."
+        exit 1
+    }
+    $iscc = @(
+        "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $iscc) {
+        Write-Error "Inno Setup 6 not found. Install with: winget install JRSoftware.InnoSetup"
+        exit 1
+    }
+    Write-Host "Compiling installer with $iscc ..."
+    & $iscc "installer\TokenTray.iss"
+    $setup = Get-ChildItem "dist\TokenTray-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $setup) {
+        Write-Error "Inno Setup did not produce a TokenTray-Setup-*.exe in dist\."
+        exit 1
+    }
+    $mb = [math]::Round($setup.Length / 1MB, 1)
+    Write-Host "Built $($setup.FullName) ($mb MB)"
 }

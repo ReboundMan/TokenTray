@@ -20,21 +20,23 @@ Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft
 
 ## Install
 
-### Option 1: Download the prebuilt zip (recommended)
+### Option 1: Run the installer (recommended)
 
-1. Grab the latest `TokenTray-vX.Y.Z-win64.zip` from the [Releases](https://github.com/jeffjame_microsoft/TokenTray/releases) page.
-2. Extract it anywhere (e.g., `C:\Tools\TokenTray\`). The whole folder is the app — don't move individual files out of it.
-3. Double-click `TokenTray.exe` inside the extracted folder. The tray icon appears in your system tray (look under the `^` overflow if you don't see it).
-4. *Optional:* run once with `--install-startup` to launch at every login:
-   ```powershell
-   .\TokenTray.exe --install-startup
-   ```
+1. Grab the latest `TokenTray-Setup-vX.Y.Z.exe` from the [Releases](https://github.com/jeffjame_microsoft/TokenTray/releases) page.
+2. Double-click. Click **Next** through the wizard. On the *Startup* page you can opt in to launching TokenTray automatically at sign-in.
+3. The app launches immediately and lives in your system tray. You can manage it later from **Add or Remove Programs** like any normal Windows app.
 
-> ⚠️ **Why a zip and not a single `.exe`?** PyInstaller's onefile mode extracts DLLs to `%TEMP%` on launch, where Windows Defender's real-time protection rewrites them and trips the OS code-integrity check (`STATUS_INVALID_IMAGE_HASH` / "Bad Image"). The onedir folder bundle avoids the temp extraction and runs cleanly.
+The installer is a per-user install (no admin required), drops files into `%LOCALAPPDATA%\Programs\TokenTray`, creates a Start Menu shortcut, and registers a proper uninstaller.
 
-> ⚠️ **Windows SmartScreen** may warn the first time you run `TokenTray.exe` because the binary is not code-signed. Click **More info → Run anyway**. The `.sha256.txt` file alongside the release lets you verify integrity if you want.
+### Option 2: Portable zip
 
-### Option 2: Run from source (developers)
+Prefer not to install? Download `TokenTray-vX.Y.Z-win64.zip` from the same Releases page, extract it anywhere, and double-click `TokenTray.exe` inside the extracted folder.
+
+> ⚠️ **Windows SmartScreen** may warn the first time you launch the installer or the portable `.exe` because the binary is not code-signed. Click **More info → Run anyway**. The `.sha256.txt` file alongside each asset lets you verify integrity if you want.
+
+> ℹ️ **Why no single onefile `.exe`?** PyInstaller's onefile mode extracts DLLs to `%TEMP%` on launch, where Windows Defender's real-time protection rewrites them and trips Windows' code-integrity check (`STATUS_INVALID_IMAGE_HASH` / "Bad Image"). The installer and the portable zip both unpack to disk once, then run cleanly.
+
+### Option 3: Run from source (developers)
 
 Requirements: Python 3.11+ on Windows.
 
@@ -92,17 +94,20 @@ Total = cached_in + input + output
 
 ## Building from source
 
-> The build venv must use **Python 3.12** (not 3.14). PyInstaller's `--onefile` mode also produces "Bad Image" errors on launch under any Python version because Defender tampers with the temp-extracted DLLs, so we build `--onedir` and zip the result. The CI workflow does the same.
+> The build venv must use **Python 3.12** (not 3.14). PyInstaller's `--onefile` mode is also unreliable under any Python version on Microsoft-imaged machines because Defender tampers with the temp-extracted DLLs; we build `--onedir` and ship it either as a zip or wrapped in an Inno Setup installer.
 
 ```powershell
 # One-time: set up a 3.12 venv just for building
 py -3.12 -m venv C:\PythonEnvs\TokenUsageTray-build312
 C:\PythonEnvs\TokenUsageTray-build312\Scripts\pip install -r requirements.txt "pyinstaller>=6.3"
 
+# One-time: install Inno Setup (only needed if you want to build the installer)
+winget install JRSoftware.InnoSetup
+
 # Build
-.\build.ps1                     # produces dist\TokenTray\ (onedir, ~100 MB)
-.\build.ps1 -Clean              # nuke build/dist first
-.\build.ps1 -Mode onefile       # try onefile (will likely hit Bad Image on launch)
+.\build.ps1                     # produces dist\TokenTray\ (onedir folder)
+.\build.ps1 -Installer          # also produces dist\TokenTray-Setup-X.Y.Z.exe
+.\build.ps1 -Clean -Installer   # nuke build/dist first, then build everything
 ```
 
 `build.ps1` auto-prefers the 3.12 build venv if it exists; otherwise it falls back to the daily-run venv.
@@ -110,13 +115,24 @@ C:\PythonEnvs\TokenUsageTray-build312\Scripts\pip install -r requirements.txt "p
 The release process (manual until EMU policy permits hosted Actions runners):
 
 ```powershell
-.\build.ps1 -Clean
+# 1. Bump the version in pyproject.toml AND installer\TokenTray.iss (MyAppVersion)
+# 2. Build
+.\build.ps1 -Clean -Installer
+
+# 3. Package the portable zip + hashes
 Compress-Archive dist\TokenTray\* dist\TokenTray-vX.Y.Z-win64.zip -Force
+(Get-FileHash dist\TokenTray-Setup-X.Y.Z.exe -Algorithm SHA256).Hash + "  TokenTray-Setup-X.Y.Z.exe" |
+    Out-File -Encoding ASCII dist\TokenTray-Setup-X.Y.Z.exe.sha256.txt
 (Get-FileHash dist\TokenTray-vX.Y.Z-win64.zip -Algorithm SHA256).Hash + "  TokenTray-vX.Y.Z-win64.zip" |
     Out-File -Encoding ASCII dist\TokenTray-vX.Y.Z-win64.zip.sha256.txt
+
+# 4. Tag and publish
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
-gh release create vX.Y.Z dist\TokenTray-vX.Y.Z-win64.zip dist\TokenTray-vX.Y.Z-win64.zip.sha256.txt --generate-notes
+gh release create vX.Y.Z `
+    dist\TokenTray-Setup-X.Y.Z.exe dist\TokenTray-Setup-X.Y.Z.exe.sha256.txt `
+    dist\TokenTray-vX.Y.Z-win64.zip dist\TokenTray-vX.Y.Z-win64.zip.sha256.txt `
+    --generate-notes
 ```
 
 A `.github/workflows/release.yml` is in the repo for the day GitHub-hosted runners are allowed on this EMU tenant; it will automatically build and publish the same artifacts on every `v*` tag push.
