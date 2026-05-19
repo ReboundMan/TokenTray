@@ -1,0 +1,248 @@
+"""Token-usage extraction from Copilot CLI telemetry logs.
+
+Parses ``~/.copilot/logs/*.log`` for ``assistant_usage`` telemetry events and
+returns per-event records with ISO timestamps so callers can bucket by day,
+hour, or session as needed.
+
+This module mirrors the parsing logic in
+``AgencyUsageReport/build_report.py::extract_tokens_from_logs`` but adds
+per-event timestamps (read from the log line prefix) so the systray app can
+render intra-day cumulative charts. If you change the event schema, update
+both consumers.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Iterable
+
+LOG_DIR = Path(os.path.expanduser("~/.copilot/logs"))
+SESSION_STORE = Path(os.path.expanduser("~/.copilot/session-store.db"))
+TELEMETRY_MARKER = "[Telemetry] cli.telemetry:"
+
+# Line prefix like:  2026-05-18T15:39:28.130Z [INFO] [Telemetry] ...
+_LINE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)")
+
+
+@dataclass
+class UsageEvent:
+    timestamp: datetime
+    session_id: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+    @property
+    def total(self) -> int:
+        # Mirror the IT usage report: cached + uncached + output.
+        # input_tokens already includes cache_write (per CLI docs),
+        # so total = cache_read + input + output.
+        return self.cache_read_tokens + self.input_tokens + self.output_tokens
+
+
+@dataclass
+class DayBucket:
+    day: date
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    events: int = 0
+    sessions: set[str] = field(default_factory=set)
+
+    @property
+    def total(self) -> int:
+        return self.cache_read_tokens + self.input_tokens + self.output_tokens
+
+
+def _parse_ts(line: str) -> datetime | None:
+    m = _LINE_TS_RE.match(line)
+    if not m:
+        return None
+    s = m.group(1)
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def iter_usage_events(log_dir: Path | None = None) -> Iterable[UsageEvent]:
+    """Yield UsageEvent records from every ``*.log`` under ``log_dir``."""
+    log_dir = log_dir or LOG_DIR
+    if not log_dir.exists():
+        return
+
+    for log_path in sorted(log_dir.glob("*.log")):
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        n = len(lines)
+        i = 0
+        while i < n:
+            if TELEMETRY_MARKER not in lines[i]:
+                i += 1
+                continue
+            ts = _parse_ts(lines[i])
+            # JSON object starts on the next non-empty line that begins with "{"
+            j = i + 1
+            while j < n and not lines[j].lstrip().startswith("{"):
+                j += 1
+            if j >= n:
+                break
+            # Brace-balanced read across multiple lines.
+            depth = 0
+            start = j
+            in_str = False
+            esc = False
+            done = False
+            while j < n:
+                for ch in lines[j]:
+                    if esc:
+                        esc = False
+                        continue
+                    if ch == "\\" and in_str:
+                        esc = True
+                        continue
+                    if ch == '"':
+                        in_str = not in_str
+                        continue
+                    if in_str:
+                        continue
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            done = True
+                            break
+                if done:
+                    break
+                j += 1
+            if not done:
+                break
+            block = "\n".join(lines[start : j + 1])
+            try:
+                ev = json.loads(block)
+            except json.JSONDecodeError:
+                i = j + 1
+                continue
+            if ev.get("kind") != "assistant_usage":
+                i = j + 1
+                continue
+            sid = ev.get("session_id")
+            metrics = ev.get("metrics") or {}
+            if not sid:
+                i = j + 1
+                continue
+            # Fall back to event-internal timestamp if line prefix lacked one.
+            if ts is None:
+                inner = ev.get("timestamp") or ev.get("created_at")
+                if isinstance(inner, str):
+                    try:
+                        ts = datetime.fromisoformat(inner.replace("Z", "+00:00"))
+                    except ValueError:
+                        ts = None
+            if ts is None:
+                # Last resort: file mtime
+                try:
+                    ts = datetime.fromtimestamp(log_path.stat().st_mtime, tz=timezone.utc)
+                except OSError:
+                    ts = datetime.now(tz=timezone.utc)
+            yield UsageEvent(
+                timestamp=ts,
+                session_id=sid,
+                input_tokens=int(metrics.get("input_tokens") or 0),
+                output_tokens=int(metrics.get("output_tokens") or 0),
+                cache_read_tokens=int(metrics.get("cache_read_tokens") or 0),
+                cache_write_tokens=int(metrics.get("cache_write_tokens") or 0),
+            )
+            i = j + 1
+
+
+def bucket_by_day(
+    events: Iterable[UsageEvent],
+    *,
+    tz: timezone | None = None,
+    days: int = 7,
+) -> list[DayBucket]:
+    """Group events into the last ``days`` calendar buckets ending today (local).
+
+    Returns a list of length ``days`` in chronological order (oldest first).
+    Days with no activity get an empty bucket so charts have stable x-axis ticks.
+    """
+    if tz is None:
+        # Local timezone for "today" semantics.
+        tz = datetime.now().astimezone().tzinfo  # type: ignore[assignment]
+    today = datetime.now(tz=tz).date()
+    start = today - timedelta(days=days - 1)
+    buckets: dict[date, DayBucket] = {
+        start + timedelta(days=i): DayBucket(day=start + timedelta(days=i))
+        for i in range(days)
+    }
+    for ev in events:
+        local_day = ev.timestamp.astimezone(tz).date()
+        if local_day < start or local_day > today:
+            continue
+        b = buckets[local_day]
+        b.input_tokens += ev.input_tokens
+        b.output_tokens += ev.output_tokens
+        b.cache_read_tokens += ev.cache_read_tokens
+        b.cache_write_tokens += ev.cache_write_tokens
+        b.events += 1
+        b.sessions.add(ev.session_id)
+    return [buckets[start + timedelta(days=i)] for i in range(days)]
+
+
+def fetch_active_session(db: Path | None = None) -> tuple[str, str] | None:
+    """Return ``(session_id, cwd)`` of the most-recently-updated session."""
+    db = db or SESSION_STORE
+    if not db.exists():
+        return None
+    try:
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        row = c.execute(
+            "SELECT id, COALESCE(cwd,'') FROM sessions ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        c.close()
+    except sqlite3.Error:
+        return None
+    return (row[0], row[1]) if row else None
+
+
+def fmt_tokens(n: int) -> str:
+    """Compact token-count formatting suitable for a tray badge (max 4 chars)."""
+    if n < 1_000:
+        return str(n)
+    if n < 10_000:
+        return f"{n/1000:.1f}k"
+    if n < 1_000_000:
+        return f"{n//1000}k"
+    if n < 10_000_000:
+        return f"{n/1_000_000:.1f}M"
+    return f"{n//1_000_000}M"
+
+
+if __name__ == "__main__":
+    evs = list(iter_usage_events())
+    print(f"Parsed {len(evs)} assistant_usage events")
+    if evs:
+        print(f"  earliest: {min(e.timestamp for e in evs).isoformat()}")
+        print(f"  latest:   {max(e.timestamp for e in evs).isoformat()}")
+    buckets = bucket_by_day(evs, days=7)
+    for b in buckets:
+        print(
+            f"  {b.day}  total={fmt_tokens(b.total):>6}  "
+            f"in={fmt_tokens(b.input_tokens):>6}  out={fmt_tokens(b.output_tokens):>6}  "
+            f"cache_r={fmt_tokens(b.cache_read_tokens):>6}  events={b.events}  sessions={len(b.sessions)}"
+        )

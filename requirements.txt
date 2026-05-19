@@ -1,0 +1,3 @@
+PyQt6>=6.6
+PyQt6-Charts>=6.6
+pywin32>=306
