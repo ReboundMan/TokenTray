@@ -61,6 +61,40 @@ class DayBucket:
     def total(self) -> int:
         return self.cache_read_tokens + self.input_tokens + self.output_tokens
 
+    @property
+    def label(self) -> str:
+        return f"{self.day.strftime('%a')} {self.day.month}/{self.day.day}"
+
+    @property
+    def short_label(self) -> str:
+        return f"{self.day.month}/{self.day.day}"
+
+
+@dataclass
+class HourBucket:
+    hour: int  # 0..23 local
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    events: int = 0
+    sessions: set[str] = field(default_factory=set)
+
+    @property
+    def total(self) -> int:
+        return self.cache_read_tokens + self.input_tokens + self.output_tokens
+
+    @property
+    def label(self) -> str:
+        h = self.hour
+        if h == 0:
+            return "12a"
+        if h < 12:
+            return f"{h}a"
+        if h == 12:
+            return "12p"
+        return f"{h - 12}p"
+
 
 def _parse_ts(line: str) -> datetime | None:
     m = _LINE_TS_RE.match(line)
@@ -202,6 +236,30 @@ def bucket_by_day(
         b.events += 1
         b.sessions.add(ev.session_id)
     return [buckets[start + timedelta(days=i)] for i in range(days)]
+
+
+def bucket_by_hour(
+    events: Iterable[UsageEvent],
+    *,
+    tz: timezone | None = None,
+) -> list[HourBucket]:
+    """Group today's events into 24 hourly buckets (0..23 in local time)."""
+    if tz is None:
+        tz = datetime.now().astimezone().tzinfo  # type: ignore[assignment]
+    today = datetime.now(tz=tz).date()
+    buckets = [HourBucket(hour=h) for h in range(24)]
+    for ev in events:
+        local = ev.timestamp.astimezone(tz)
+        if local.date() != today:
+            continue
+        b = buckets[local.hour]
+        b.input_tokens += ev.input_tokens
+        b.output_tokens += ev.output_tokens
+        b.cache_read_tokens += ev.cache_read_tokens
+        b.cache_write_tokens += ev.cache_write_tokens
+        b.events += 1
+        b.sessions.add(ev.session_id)
+    return buckets
 
 
 def fetch_active_session(db: Path | None = None) -> tuple[str, str] | None:

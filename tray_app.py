@@ -9,8 +9,8 @@ from PyQt6.QtGui import QAction, QCursor
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from icon_renderer import make_badge_icon
-from popup_window import PopupWindow
-from usage_core import bucket_by_day, fmt_tokens, iter_usage_events
+from popup_window import DEFAULT_WINDOW, PopupWindow
+from usage_core import bucket_by_day, bucket_by_hour, fmt_tokens, iter_usage_events
 
 REFRESH_MS = 120_000  # 120 seconds (matches user preference)
 
@@ -20,8 +20,11 @@ class TrayApp:
         self.app = getattr(TrayApp, "_existing_app", None) or QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
 
+        self._window_days = DEFAULT_WINDOW
+
         self.popup = PopupWindow()
         self.popup.refresh_button.clicked.connect(self.refresh)
+        self.popup.window_changed.connect(self._on_window_changed)
 
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(make_badge_icon("…"))
@@ -62,11 +65,21 @@ class TrayApp:
         self.refresh()
         self.popup.show_near(QCursor.pos())
 
+    def _on_window_changed(self, days: int) -> None:
+        self._window_days = days
+        self.refresh()
+
     # ------------------------------------------------------------------
     def refresh(self) -> None:
         try:
-            buckets = bucket_by_day(iter_usage_events(), days=7)
-            today = buckets[-1]
+            events = list(iter_usage_events())
+            # Stats grid always reflects "today" regardless of chart window.
+            today = bucket_by_day(events, days=1)[-1]
+            if self._window_days == 1:
+                chart_buckets = bucket_by_hour(events)
+            else:
+                chart_buckets = bucket_by_day(events, days=self._window_days)
+
             badge = fmt_tokens(today.total) if today.total else "0"
             self.tray.setIcon(make_badge_icon(badge))
             tip = (
@@ -75,7 +88,7 @@ class TrayApp:
                 f"Updated {datetime.now().strftime('%H:%M:%S')}"
             )
             self.tray.setToolTip(tip)
-            self.popup.update_data(buckets)
+            self.popup.update_data(today, chart_buckets)
         except Exception:
             # Never let a transient log-parse or rendering error kill the tray.
             import traceback

@@ -1,7 +1,8 @@
-"""Popup window showing today's token usage and the last 7 days as a chart."""
+"""Popup window showing today's token usage and a switchable 1/7/30-day chart."""
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any, Sequence
 
 from PyQt6.QtCharts import (
     QBarCategoryAxis,
@@ -11,10 +12,11 @@ from PyQt6.QtCharts import (
     QStackedBarSeries,
     QValueAxis,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -25,7 +27,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from usage_core import DayBucket, fmt_tokens
+from usage_core import DayBucket, HourBucket, fmt_tokens
+
+WINDOWS = (1, 7, 30)  # Selectable look-back windows in days
+DEFAULT_WINDOW = 7
 
 
 class _Stat(QWidget):
@@ -50,8 +55,12 @@ class _Stat(QWidget):
 class PopupWindow(QWidget):
     """Frameless popup anchored above/below the tray icon."""
 
+    # Emitted when the user changes the chart look-back (1 / 7 / 30 days).
+    window_changed = pyqtSignal(int)
+
     def __init__(self):
         super().__init__()
+        self._window_days = DEFAULT_WINDOW
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -62,7 +71,7 @@ class PopupWindow(QWidget):
             "QWidget#root { background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; }"
             "QLabel { color:#0f172a; }"
         )
-        self.resize(620, 460)
+        self.resize(640, 480)
 
         root = QFrame(self)
         root.setObjectName("root")
@@ -103,6 +112,28 @@ class PopupWindow(QWidget):
         grid.addWidget(self._stat_events, 1, 2)
         v.addLayout(grid)
 
+        # Segmented look-back selector (1 / 7 / 30 days)
+        seg_row = QHBoxLayout()
+        seg_label = QLabel("Range:")
+        seg_label.setStyleSheet("color:#64748b; font-size:11px;")
+        seg_row.addWidget(seg_label)
+        self._window_group = QButtonGroup(self)
+        self._window_group.setExclusive(True)
+        for days in WINDOWS:
+            label = f"{days} day" if days == 1 else f"{days} days"
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setMinimumHeight(24)
+            btn.setStyleSheet(self._segmented_qss())
+            if days == DEFAULT_WINDOW:
+                btn.setChecked(True)
+            self._window_group.addButton(btn, days)
+            seg_row.addWidget(btn)
+        seg_row.addStretch(1)
+        v.addLayout(seg_row)
+        self._window_group.idClicked.connect(self._on_window_clicked)
+
         # Chart
         self._chart = QChart()
         self._chart.setBackgroundRoundness(0)
@@ -141,10 +172,43 @@ class PopupWindow(QWidget):
         self._close_btn.clicked.connect(self.hide)
 
     # ------------------------------------------------------------------
-    def update_data(self, buckets: list[DayBucket]) -> None:
-        if not buckets:
+    @staticmethod
+    def _segmented_qss() -> str:
+        return (
+            "QPushButton {"
+            "  padding: 3px 12px;"
+            "  border: 1px solid #94a3b8;"
+            "  border-radius: 4px;"
+            "  background: #ffffff;"
+            "  color: #0f172a;"
+            "  font-size: 11px;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: #f1f5f9; }"
+            "QPushButton:checked {"
+            "  background: #2563eb;"
+            "  color: #ffffff;"
+            "  border-color: #1e40af;"
+            "}"
+        )
+
+    def _on_window_clicked(self, days: int) -> None:
+        if days == self._window_days:
             return
-        today = buckets[-1]
+        self._window_days = days
+        self.window_changed.emit(days)
+
+    @property
+    def window_days(self) -> int:
+        return self._window_days
+
+    # ------------------------------------------------------------------
+    def update_data(
+        self,
+        today: DayBucket,
+        chart_buckets: Sequence[Any],
+    ) -> None:
+        """Refresh the stats grid (always today) and the chart (selected window)."""
         self._stat_total.set_value(fmt_tokens(today.total))
         self._stat_in.set_value(fmt_tokens(today.input_tokens))
         self._stat_out.set_value(fmt_tokens(today.output_tokens))
@@ -152,9 +216,9 @@ class PopupWindow(QWidget):
         self._stat_sessions.set_value(str(len(today.sessions)))
         self._stat_events.set_value(str(today.events))
         self._updated_lbl.setText("Updated " + datetime.now().strftime("%H:%M:%S"))
-        self._render_chart(buckets)
+        self._render_chart(chart_buckets)
 
-    def _render_chart(self, buckets: list[DayBucket]) -> None:
+    def _render_chart(self, buckets: Sequence[Any]) -> None:
         self._chart.removeAllSeries()
         for ax in list(self._chart.axes()):
             self._chart.removeAxis(ax)
@@ -175,14 +239,26 @@ class PopupWindow(QWidget):
         set_in.setColor(QColor("#2563eb"))
         set_out.setColor(QColor("#16a34a"))
 
+        # Pick label style based on count so they fit horizontally.
+        n = len(buckets)
+        if n <= 7:
+            label_attr = "label"
+            stride = 1
+        elif n <= 14:
+            label_attr = "short_label"
+            stride = 1
+        else:
+            # 30-day daily or 24-hour: thin labels to every other / every Nth.
+            label_attr = "short_label" if isinstance(buckets[0], DayBucket) else "label"
+            stride = max(1, n // 10)
+
         categories: list[str] = []
-        for b in buckets:
+        for idx, b in enumerate(buckets):
             set_cache.append(b.cache_read_tokens / scale)
             set_in.append(b.input_tokens / scale)
             set_out.append(b.output_tokens / scale)
-            # Short label like "Wed 5/13" -- fits in narrow columns.
-            # (Windows strftime lacks %-m / %-d, so build manually.)
-            categories.append(f"{b.day.strftime('%a')} {b.day.month}/{b.day.day}")
+            raw = getattr(b, label_attr, "")
+            categories.append(raw if (idx % stride == 0) else "")
 
         stacked = QStackedBarSeries()
         stacked.append(set_cache)
