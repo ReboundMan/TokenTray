@@ -149,15 +149,19 @@ TokenTray\
 ├── usage_core.py         # Telemetry log parsing + day/hour bucketing
 ├── install_startup.py    # Startup-folder shortcut install/remove
 ├── run.pyw               # pythonw entry point (no console)
-├── build.ps1             # PyInstaller build script
+├── build.ps1             # PyInstaller + (optional) Inno Setup build script
 ├── pyproject.toml        # Package metadata + entry points
 ├── requirements.txt      # Runtime deps (kept for backward compat)
+├── installer\
+│   └── TokenTray.iss     # Inno Setup script -> dist\TokenTray-Setup-*.exe
 ├── tools\
-│   └── make_icon.py      # Regenerate assets\tokentray.ico
+│   ├── make_icon.py      # Regenerate assets\tokentray.ico
+│   └── make_screenshot.py# Regenerate assets\screenshot.png
 ├── assets\
-│   └── tokentray.ico     # App icon (committed; PyInstaller bundles it)
+│   ├── tokentray.ico     # App icon (committed; bundled by PyInstaller)
+│   └── screenshot.png    # README screenshot
 └── .github\workflows\
-    └── release.yml       # CI build & release on tag push
+    └── release.yml       # CI build & release on tag push (needs hosted runners)
 ```
 
 ---
