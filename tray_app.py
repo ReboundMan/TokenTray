@@ -104,6 +104,23 @@ class TrayApp:
 
 
 def main() -> int:
+    # CLI flags work in both the source `python tray_app.py` and the frozen
+    # `TokenTray.exe` so end users can manage autostart without installing
+    # Python.
+    if "--install-startup" in sys.argv:
+        from install_startup import install
+        return install()
+    if "--uninstall-startup" in sys.argv or "--remove-startup" in sys.argv:
+        from install_startup import remove
+        return remove()
+    if "--version" in sys.argv:
+        try:
+            from importlib.metadata import version
+            print(f"tokentray {version('tokentray')}")
+        except Exception:
+            print("tokentray 0.1.0")
+        return 0
+
     # NOTE: QApplication must exist before any Qt static query that touches
     # the platform plugin. Calling QSystemTrayIcon.isSystemTrayAvailable()
     # without one crashes under pythonw.exe.

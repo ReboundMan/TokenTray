@@ -4,3 +4,15 @@ __pycache__/
 .venv/
 .cache/
 *.log
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.egg-info/
+.eggs/
+
+# Generated icon (run tools\make_icon.py to regenerate)
+# Keeping assets/tokentray.ico checked in so the GH Actions build doesn't
+# need to regenerate it; uncomment the next line if you'd rather not.
+# assets/tokentray.ico

@@ -1,75 +1,135 @@
-# TokenUsageTray
+# TokenTray
 
-A lightweight Windows systray app that shows live Copilot CLI token usage
-parsed from `~/.copilot/logs/*.log`. Companion to
-`AgencyUsageReport/build_report.py` (which produces the static HTML report);
-this app gives you the same numbers in real time without having to rebuild.
+A lightweight Windows **system tray app** that shows your live **GitHub Copilot CLI** token usage, parsed from local telemetry logs. No network calls, no extra accounts — just a number in your tray and a click-away breakdown.
 
-## What it shows
+![TokenTray screenshot](assets/screenshot.png)
 
-- **Tray icon**: today's total tokens (`12k`, `1.2M`, etc.)
-- **Hover tooltip**: today total + turn / session counts + last refresh time
-- **Click**: floating popup with
-  - Today's totals broken down (uncached / output / cached / sessions / turns)
-  - Stacked bar chart of the last 7 days (cached + uncached + output)
-- **Auto-refresh**: every 120 seconds (configurable in `tray_app.py`)
+## What it does
 
-## Data source
+- **Tray icon** shows today's total tokens at a glance (`6.9M`, `124k`, `0`, …)
+- **Hover** for a tooltip with turn / session counts and last refresh time
+- **Click** for a popup with:
+  - Today's totals broken down into Uncached input / Output / Cached input / Sessions / Turns
+  - A stacked bar chart you can switch between **1 day** (hourly), **7 days**, or **30 days**
+- **Auto-refresh** every 2 minutes; manual **Refresh** button in the popup
+- **Auto-start at login** (optional, one command)
+
+Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft IT report). It does **not** include the IDE Copilot, Clawpilot, M365 Copilot, or cloud Coding Agent — those emit telemetry elsewhere.
+
+---
+
+## Install
+
+### Option 1: Download the prebuilt `.exe` (recommended)
+
+1. Grab the latest `TokenTray-vX.Y.Z.exe` from the [Releases](https://github.com/jeffjame_microsoft/TokenTray/releases) page.
+2. Double-click. The tray icon appears in your system tray (look under the `^` overflow if you don't see it).
+3. *Optional:* run once with `--install-startup` to launch at every login:
+   ```powershell
+   .\TokenTray-vX.Y.Z.exe --install-startup
+   ```
+
+> ⚠️ **Windows SmartScreen** will warn the first time you run it because the binary is not code-signed. Click **More info → Run anyway**. The hash file alongside the release lets you verify integrity if you want.
+
+### Option 2: Run from source (developers)
+
+Requirements: Python 3.11+ on Windows.
+
+```powershell
+git clone https://github.com/jeffjame_microsoft/TokenTray.git
+cd TokenTray
+py -m venv .venv
+.\.venv\Scripts\pip install -e .
+.\.venv\Scripts\pythonw run.pyw          # run once
+.\.venv\Scripts\python install_startup.py # autostart at login
+```
+
+---
+
+## Usage
+
+| Action | Result |
+|---|---|
+| Left-click the tray icon | Open the details popup |
+| Right-click the tray icon | Menu: Show details / Refresh now / Quit |
+| Hover the tray icon | Tooltip with today total + turn/session counts |
+| `1 day` button | Hourly bars for today |
+| `7 days` button (default) | Daily bars, 7-day stacked |
+| `30 days` button | Daily bars, 30-day stacked |
+
+CLI flags (work for both the `.exe` and `python tray_app.py`):
+
+```text
+--install-startup       Add a Startup-folder shortcut for auto-launch
+--uninstall-startup     Remove it
+--version               Print version and exit
+```
+
+---
+
+## How it works
 
 `usage_core.py::iter_usage_events()` scans every `*.log` under
 `~/.copilot/logs/` for `[Telemetry] cli.telemetry:` blocks where
-`kind == "assistant_usage"`, extracting per-event:
+`kind == "assistant_usage"`. From each block it extracts:
 
-- ISO timestamp (from log-line prefix)
+- ISO timestamp (from the log-line prefix)
 - `session_id`
 - `metrics.input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens`
 
-The CLI emits `input_tokens` as "new + cache-write tokens billed at base
-rate" (cache write is a subset of input), so the displayed
-`Total = cached_in + input + output` matches the Microsoft IT usage report
-breakdown.
+The CLI emits `input_tokens` as "new + cache-write tokens billed at base rate" (cache-write is a subset of input). So the displayed total is:
 
-Scope is local CLI (Agency) only — IDE Copilot, Clawpilot, M365 Copilot, and
-cloud Coding Agent are not included.
-
-## Install / run
-
-The venv lives at `C:\PythonEnvs\TokenUsageTray\.venv` (per the global
-`C:\PythonEnvs\<project>` convention).
-
-```powershell
-# One-time
-py -m venv C:\PythonEnvs\TokenUsageTray\.venv
-C:\PythonEnvs\TokenUsageTray\.venv\Scripts\pip install -r requirements.txt
-
-# Run interactively
-C:\PythonEnvs\TokenUsageTray\.venv\Scripts\pythonw.exe run.pyw
-
-# Install Windows Startup shortcut so it launches at login
-C:\PythonEnvs\TokenUsageTray\.venv\Scripts\python.exe install_startup.py
-
-# Remove the startup entry
-C:\PythonEnvs\TokenUsageTray\.venv\Scripts\python.exe install_startup.py --remove
+```
+Total = cached_in + input + output
 ```
 
-## Smoke test
+…which matches the Microsoft IT usage-report breakdown.
 
-The data module is runnable directly and prints the last 7 days of buckets:
+---
+
+## Building from source
+
+> The build venv must use **Python 3.12** (not 3.14). PyInstaller's `--onefile` mode produces a "Bad Image" / `STATUS_INVALID_IMAGE_HASH` error on launch when built under Python 3.14. The CI workflow pins 3.12 automatically; locally:
 
 ```powershell
-C:\PythonEnvs\TokenUsageTray\.venv\Scripts\python.exe usage_core.py
+# One-time: set up a 3.12 venv just for building
+py -3.12 -m venv C:\PythonEnvs\TokenUsageTray-build312
+C:\PythonEnvs\TokenUsageTray-build312\Scripts\pip install -r requirements.txt "pyinstaller>=6.3"
+
+# Build
+.\build.ps1            # builds dist\TokenTray.exe (~40 MB onefile)
+.\build.ps1 -Clean     # nuke build/dist first
 ```
+
+`build.ps1` auto-prefers the 3.12 build venv if it exists; otherwise it falls back to the daily-run venv (and warns if that's 3.14).
+
+Releases are produced automatically by `.github/workflows/release.yml` when you push a tag matching `v*` (for example `git tag v0.1.0 && git push --tags`). The workflow builds the `.exe`, computes its SHA-256, and uploads both to a new GitHub Release with auto-generated release notes.
+
+---
 
 ## File layout
 
 ```
-TokenUsageTray\
-├── tray_app.py        # QApplication + QSystemTrayIcon + refresh timer
-├── popup_window.py    # frameless QWidget popup with QtCharts stacked bars
-├── icon_renderer.py   # renders the badge-style QIcon
-├── usage_core.py      # telemetry log parsing + day bucketing
-├── install_startup.py # creates/removes the Startup-folder shortcut
-├── run.pyw            # entry point for pythonw.exe (no console window)
-├── requirements.txt
-└── README.md
+TokenTray\
+├── tray_app.py           # QApplication + QSystemTrayIcon + refresh timer
+├── popup_window.py       # Frameless popup + 1/7/30-day chart
+├── icon_renderer.py      # Tray badge with today-token-count overlay
+├── usage_core.py         # Telemetry log parsing + day/hour bucketing
+├── install_startup.py    # Startup-folder shortcut install/remove
+├── run.pyw               # pythonw entry point (no console)
+├── build.ps1             # PyInstaller build script
+├── pyproject.toml        # Package metadata + entry points
+├── requirements.txt      # Runtime deps (kept for backward compat)
+├── tools\
+│   └── make_icon.py      # Regenerate assets\tokentray.ico
+├── assets\
+│   └── tokentray.ico     # App icon (committed; PyInstaller bundles it)
+└── .github\workflows\
+    └── release.yml       # CI build & release on tag push
 ```
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Jeff James

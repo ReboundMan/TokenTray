@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tokentray"
+version = "0.1.0"
+description = "Windows systray app showing live GitHub Copilot CLI token usage."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Jeff James" }]
+keywords = ["copilot", "github", "tokens", "systray", "windows", "telemetry"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "PyQt6>=6.6",
+    "PyQt6-Charts>=6.6",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.3"]
+
+[project.urls]
+Homepage = "https://github.com/jeffjame_microsoft/TokenTray"
+Issues   = "https://github.com/jeffjame_microsoft/TokenTray/issues"
+
+[project.scripts]
+tokentray-install-startup = "install_startup:install"
+tokentray-uninstall-startup = "install_startup:remove"
+
+[project.gui-scripts]
+tokentray = "tray_app:main"
+
+[tool.setuptools]
+py-modules = ["tray_app", "popup_window", "icon_renderer", "usage_core", "install_startup"]
