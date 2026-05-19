@@ -20,10 +20,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Build TokenTray.exe
+      - name: Build TokenTray (onedir)
         shell: pwsh
         run: |
-          .\build.ps1 -Python "${{ env.pythonLocation }}\python.exe" -Clean
+          .\build.ps1 -Python "${{ env.pythonLocation }}\python.exe" -Clean -Mode onedir
 
       - name: Compute version
         id: ver
@@ -33,30 +33,31 @@ jobs:
           if (-not $tag.StartsWith("v")) { $tag = "v0.0.0-dev" }
           "version=$tag" >> $env:GITHUB_OUTPUT
 
-      - name: Rename artifact
+      - name: Package zip + hash
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
-          Move-Item dist\TokenTray.exe "dist\TokenTray-$v.exe"
-          Get-FileHash "dist\TokenTray-$v.exe" -Algorithm SHA256 |
-            Select-Object Hash, Path | Format-List | Out-File "dist\TokenTray-$v.exe.sha256.txt"
-          Get-ChildItem dist
+          $zip = "dist\TokenTray-$v-win64.zip"
+          Compress-Archive -Path "dist\TokenTray\*" -DestinationPath $zip -Force
+          $h = (Get-FileHash $zip -Algorithm SHA256).Hash
+          "$h  TokenTray-$v-win64.zip" | Out-File -Encoding ASCII "$zip.sha256.txt"
+          Get-ChildItem dist -File
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: TokenTray-${{ steps.ver.outputs.version }}
           path: |
-            dist/TokenTray-*.exe
-            dist/TokenTray-*.sha256.txt
+            dist/TokenTray-*.zip
+            dist/TokenTray-*.zip.sha256.txt
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/TokenTray-*.exe
-            dist/TokenTray-*.sha256.txt
+            dist/TokenTray-*.zip
+            dist/TokenTray-*.zip.sha256.txt
           generate_release_notes: true
           draft: false
           prerelease: false

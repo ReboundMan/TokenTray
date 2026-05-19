@@ -7,7 +7,9 @@
 [CmdletBinding()]
 param(
     [string]$Python = "",
-    [switch]$Clean
+    [switch]$Clean,
+    [ValidateSet("onefile", "onedir")]
+    [string]$Mode = "onedir"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,9 +17,10 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $here
 
 # Pick a python: explicit arg > 3.12 build venv > 3.14 run venv > py launcher
-# Note: PyInstaller --onefile is unreliable with Python 3.14 (causes
-# STATUS_INVALID_IMAGE_HASH / "Bad Image" on launch). 3.12 is the LTS-class
-# version PyInstaller is fully battle-tested against.
+# Note: PyInstaller --onefile is unreliable across Python versions because
+# Defender real-time protection intercepts the temp-extracted DLLs and the
+# resulting integrity-check failure surfaces as STATUS_INVALID_IMAGE_HASH
+# ("Bad Image" dialog). We default to --onedir for distribution and zip it.
 if (-not $Python) {
     $candidates = @(
         "C:\PythonEnvs\TokenUsageTray-build312\Scripts\python.exe",
@@ -31,12 +34,7 @@ if (-not $Python) {
     }
 }
 Write-Host "Using Python: $Python"
-
-# Warn if user is building with 3.14 (onefile is broken there).
-$pyVer = (& $Python -c "import sys; print(sys.version_info[:2])").Trim()
-if ($pyVer -eq "(3, 14)") {
-    Write-Warning "Building with Python 3.14 produces a 'Bad Image' onefile due to PyInstaller/Defender hash check. Use Python 3.12 for the build venv."
-}
+Write-Host "Build mode  : $Mode"
 
 if ($Clean) {
     Write-Host "Cleaning previous build artifacts..."
@@ -54,9 +52,10 @@ if (-not (Test-Path "assets\tokentray.ico")) {
     & $Python tools\make_icon.py
 }
 
-# Build. --onefile gives a single exe (~30-50MB); --windowed = no console.
+$modeFlag = if ($Mode -eq "onefile") { "--onefile" } else { "--onedir" }
+
 & $Python -m PyInstaller `
-    --onefile `
+    $modeFlag `
     --windowed `
     --name TokenTray `
     --icon assets\tokentray.ico `
@@ -65,10 +64,21 @@ if (-not (Test-Path "assets\tokentray.ico")) {
     --clean `
     run.pyw
 
-if (-not (Test-Path "dist\TokenTray.exe")) {
-    Write-Error "Build failed: dist\TokenTray.exe not produced."
-    exit 1
+if ($Mode -eq "onefile") {
+    $exe = "dist\TokenTray.exe"
+    if (-not (Test-Path $exe)) {
+        Write-Error "Build failed: $exe not produced."
+        exit 1
+    }
+    $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+    Write-Host "Built $exe ($size MB)"
+} else {
+    $dir = "dist\TokenTray"
+    if (-not (Test-Path "$dir\TokenTray.exe")) {
+        Write-Error "Build failed: $dir\TokenTray.exe not produced."
+        exit 1
+    }
+    $bytes = (Get-ChildItem $dir -Recurse | Measure-Object Length -Sum).Sum
+    $size = [math]::Round($bytes / 1MB, 1)
+    Write-Host "Built $dir\ ($size MB across $(Get-ChildItem $dir -Recurse -File | Measure-Object).Count files)"
 }
-
-$size = [math]::Round((Get-Item "dist\TokenTray.exe").Length / 1MB, 1)
-Write-Host "✓ Built dist\TokenTray.exe ($size MB)"

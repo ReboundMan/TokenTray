@@ -20,16 +20,19 @@ Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft
 
 ## Install
 
-### Option 1: Download the prebuilt `.exe` (recommended)
+### Option 1: Download the prebuilt zip (recommended)
 
-1. Grab the latest `TokenTray-vX.Y.Z.exe` from the [Releases](https://github.com/jeffjame_microsoft/TokenTray/releases) page.
-2. Double-click. The tray icon appears in your system tray (look under the `^` overflow if you don't see it).
-3. *Optional:* run once with `--install-startup` to launch at every login:
+1. Grab the latest `TokenTray-vX.Y.Z-win64.zip` from the [Releases](https://github.com/jeffjame_microsoft/TokenTray/releases) page.
+2. Extract it anywhere (e.g., `C:\Tools\TokenTray\`). The whole folder is the app — don't move individual files out of it.
+3. Double-click `TokenTray.exe` inside the extracted folder. The tray icon appears in your system tray (look under the `^` overflow if you don't see it).
+4. *Optional:* run once with `--install-startup` to launch at every login:
    ```powershell
-   .\TokenTray-vX.Y.Z.exe --install-startup
+   .\TokenTray.exe --install-startup
    ```
 
-> ⚠️ **Windows SmartScreen** will warn the first time you run it because the binary is not code-signed. Click **More info → Run anyway**. The hash file alongside the release lets you verify integrity if you want.
+> ⚠️ **Why a zip and not a single `.exe`?** PyInstaller's onefile mode extracts DLLs to `%TEMP%` on launch, where Windows Defender's real-time protection rewrites them and trips the OS code-integrity check (`STATUS_INVALID_IMAGE_HASH` / "Bad Image"). The onedir folder bundle avoids the temp extraction and runs cleanly.
+
+> ⚠️ **Windows SmartScreen** may warn the first time you run `TokenTray.exe` because the binary is not code-signed. Click **More info → Run anyway**. The `.sha256.txt` file alongside the release lets you verify integrity if you want.
 
 ### Option 2: Run from source (developers)
 
