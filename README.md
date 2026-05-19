@@ -92,7 +92,7 @@ Total = cached_in + input + output
 
 ## Building from source
 
-> The build venv must use **Python 3.12** (not 3.14). PyInstaller's `--onefile` mode produces a "Bad Image" / `STATUS_INVALID_IMAGE_HASH` error on launch when built under Python 3.14. The CI workflow pins 3.12 automatically; locally:
+> The build venv must use **Python 3.12** (not 3.14). PyInstaller's `--onefile` mode also produces "Bad Image" errors on launch under any Python version because Defender tampers with the temp-extracted DLLs, so we build `--onedir` and zip the result. The CI workflow does the same.
 
 ```powershell
 # One-time: set up a 3.12 venv just for building
@@ -100,13 +100,26 @@ py -3.12 -m venv C:\PythonEnvs\TokenUsageTray-build312
 C:\PythonEnvs\TokenUsageTray-build312\Scripts\pip install -r requirements.txt "pyinstaller>=6.3"
 
 # Build
-.\build.ps1            # builds dist\TokenTray.exe (~40 MB onefile)
-.\build.ps1 -Clean     # nuke build/dist first
+.\build.ps1                     # produces dist\TokenTray\ (onedir, ~100 MB)
+.\build.ps1 -Clean              # nuke build/dist first
+.\build.ps1 -Mode onefile       # try onefile (will likely hit Bad Image on launch)
 ```
 
-`build.ps1` auto-prefers the 3.12 build venv if it exists; otherwise it falls back to the daily-run venv (and warns if that's 3.14).
+`build.ps1` auto-prefers the 3.12 build venv if it exists; otherwise it falls back to the daily-run venv.
 
-Releases are produced automatically by `.github/workflows/release.yml` when you push a tag matching `v*` (for example `git tag v0.1.0 && git push --tags`). The workflow builds the `.exe`, computes its SHA-256, and uploads both to a new GitHub Release with auto-generated release notes.
+The release process (manual until EMU policy permits hosted Actions runners):
+
+```powershell
+.\build.ps1 -Clean
+Compress-Archive dist\TokenTray\* dist\TokenTray-vX.Y.Z-win64.zip -Force
+(Get-FileHash dist\TokenTray-vX.Y.Z-win64.zip -Algorithm SHA256).Hash + "  TokenTray-vX.Y.Z-win64.zip" |
+    Out-File -Encoding ASCII dist\TokenTray-vX.Y.Z-win64.zip.sha256.txt
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+gh release create vX.Y.Z dist\TokenTray-vX.Y.Z-win64.zip dist\TokenTray-vX.Y.Z-win64.zip.sha256.txt --generate-notes
+```
+
+A `.github/workflows/release.yml` is in the repo for the day GitHub-hosted runners are allowed on this EMU tenant; it will automatically build and publish the same artifacts on every `v*` tag push.
 
 ---
 
