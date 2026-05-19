@@ -62,7 +62,7 @@ class PopupWindow(QWidget):
             "QWidget#root { background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; }"
             "QLabel { color:#0f172a; }"
         )
-        self.resize(520, 400)
+        self.resize(620, 460)
 
         root = QFrame(self)
         root.setObjectName("root")
@@ -120,10 +120,19 @@ class PopupWindow(QWidget):
         self._close_btn = QPushButton("Close")
         for b in (self._refresh_btn, self._close_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setMinimumHeight(28)
             b.setStyleSheet(
-                "QPushButton { padding:4px 12px; border-radius:6px;"
-                " background:#f1f5f9; border:1px solid #cbd5e1; }"
-                "QPushButton:hover { background:#e2e8f0; }"
+                "QPushButton {"
+                "  padding: 5px 16px;"
+                "  border-radius: 6px;"
+                "  background: #f1f5f9;"
+                "  border: 1px solid #94a3b8;"
+                "  color: #0f172a;"
+                "  font-size: 12px;"
+                "  font-weight: 600;"
+                "}"
+                "QPushButton:hover { background: #e2e8f0; border-color: #475569; }"
+                "QPushButton:pressed { background: #cbd5e1; }"
             )
         footer.addWidget(self._refresh_btn)
         footer.addWidget(self._close_btn)
@@ -150,6 +159,15 @@ class PopupWindow(QWidget):
         for ax in list(self._chart.axes()):
             self._chart.removeAxis(ax)
 
+        # Auto-scale: render bars in K or M tokens so the Y-axis labels fit.
+        max_total = max((b.total for b in buckets), default=0)
+        if max_total >= 1_000_000:
+            scale, unit = 1_000_000.0, "M"
+        elif max_total >= 1_000:
+            scale, unit = 1_000.0, "K"
+        else:
+            scale, unit = 1.0, ""
+
         set_cache = QBarSet("Cached in")
         set_in = QBarSet("Uncached in")
         set_out = QBarSet("Output")
@@ -158,13 +176,13 @@ class PopupWindow(QWidget):
         set_out.setColor(QColor("#16a34a"))
 
         categories: list[str] = []
-        max_total = 1
         for b in buckets:
-            set_cache.append(b.cache_read_tokens)
-            set_in.append(b.input_tokens)
-            set_out.append(b.output_tokens)
-            categories.append(b.day.strftime("%a\n%m/%d"))
-            max_total = max(max_total, b.total)
+            set_cache.append(b.cache_read_tokens / scale)
+            set_in.append(b.input_tokens / scale)
+            set_out.append(b.output_tokens / scale)
+            # Short label like "Wed 5/13" -- fits in narrow columns.
+            # (Windows strftime lacks %-m / %-d, so build manually.)
+            categories.append(f"{b.day.strftime('%a')} {b.day.month}/{b.day.day}")
 
         stacked = QStackedBarSeries()
         stacked.append(set_cache)
@@ -175,11 +193,16 @@ class PopupWindow(QWidget):
 
         ax_x = QBarCategoryAxis()
         ax_x.append(categories)
-        ax_x.setLabelsFont(QFont("Segoe UI", 8))
+        ax_x.setLabelsFont(QFont("Segoe UI", 9))
         ax_y = QValueAxis()
-        ax_y.setLabelFormat("%d")
-        ax_y.setRange(0, max(max_total * 1.1, 10))
+        ax_y.setLabelFormat(f"%.1f{unit}" if unit else "%d")
+        scaled_max = (max_total / scale) if scale else 0
+        ax_y.setRange(0, max(scaled_max * 1.1, 1.0))
         ax_y.applyNiceNumbers()
+        ax_y.setLabelsFont(QFont("Segoe UI", 9))
+        if unit:
+            ax_y.setTitleText(f"Tokens ({unit})")
+            ax_y.setTitleFont(QFont("Segoe UI", 9))
         self._chart.addAxis(ax_x, Qt.AlignmentFlag.AlignBottom)
         self._chart.addAxis(ax_y, Qt.AlignmentFlag.AlignLeft)
         stacked.attachAxis(ax_x)
