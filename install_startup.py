@@ -58,6 +58,14 @@ def _startup_dir() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
+def is_installed() -> bool:
+    """Return True if the TokenTray Startup shortcut currently exists."""
+    try:
+        return (_startup_dir() / SHORTCUT_NAME).exists()
+    except SystemExit:
+        return False
+
+
 def install() -> int:
     target_path, args, workdir = _shortcut_target()
     if not Path(target_path).exists():

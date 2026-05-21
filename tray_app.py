@@ -6,7 +6,7 @@ from datetime import datetime
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QAction, QCursor
-from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from icon_renderer import make_badge_icon
 from popup_window import DEFAULT_WINDOW, PopupWindow
@@ -37,6 +37,15 @@ class TrayApp:
         menu.addAction(act_show)
         menu.addAction(act_refresh)
         menu.addSeparator()
+
+        settings_menu = menu.addMenu("Settings")
+        self._act_startup = QAction("Start at login", settings_menu)
+        self._act_startup.setCheckable(True)
+        self._act_startup.setChecked(self._startup_is_installed())
+        self._act_startup.toggled.connect(self._on_startup_toggled)
+        settings_menu.addAction(self._act_startup)
+
+        menu.addSeparator()
         menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_activated)
@@ -49,6 +58,43 @@ class TrayApp:
 
         # Initial refresh as soon as the event loop starts.
         QTimer.singleShot(50, self.refresh)
+
+    # ------------------------------------------------------------------
+    def _startup_is_installed(self) -> bool:
+        try:
+            from install_startup import is_installed
+            return is_installed()
+        except BaseException:
+            return False
+
+    def _on_startup_toggled(self, checked: bool) -> None:
+        """Install or remove the Windows Startup shortcut to match the menu state."""
+        try:
+            from install_startup import install, remove
+            if checked:
+                install()
+            else:
+                remove()
+        except BaseException as exc:  # SystemExit from install_startup helpers
+            # Revert the menu check state on failure, and surface the error
+            # rather than silently leaving the menu out of sync.
+            self._act_startup.blockSignals(True)
+            self._act_startup.setChecked(self._startup_is_installed())
+            self._act_startup.blockSignals(False)
+            QMessageBox.warning(
+                None,
+                "TokenTray",
+                f"Failed to {'enable' if checked else 'disable'} start at login:\n{exc}",
+            )
+            return
+
+        # Re-sync the check state from disk so the menu reflects reality even
+        # if install/remove silently no-op'd (e.g. missing APPDATA).
+        actual = self._startup_is_installed()
+        if actual != checked:
+            self._act_startup.blockSignals(True)
+            self._act_startup.setChecked(actual)
+            self._act_startup.blockSignals(False)
 
     # ------------------------------------------------------------------
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:

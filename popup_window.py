@@ -31,6 +31,14 @@ from usage_core import DayBucket, fmt_tokens
 DEFAULT_WINDOW = 7  # Fixed look-back window in days
 
 
+def _app_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("tokentray")
+    except Exception:
+        return "0.1.0"
+
+
 class _Stat(QWidget):
     def __init__(self, label: str, color: str = "#0f172a"):
         super().__init__()
@@ -127,6 +135,9 @@ class PopupWindow(QWidget):
 
         # Footer buttons
         footer = QHBoxLayout()
+        version_lbl = QLabel(f"v{_app_version()}")
+        version_lbl.setStyleSheet("color:#94a3b8; font-size:11px;")
+        footer.addWidget(version_lbl)
         footer.addStretch(1)
         self._refresh_btn = QPushButton("Refresh")
         self._close_btn = QPushButton("Close")
