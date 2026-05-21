@@ -10,7 +10,7 @@ A lightweight Windows **system tray app** that shows your live **GitHub Copilot 
 - **Hover** for a tooltip with turn / session counts and last refresh time
 - **Click** for a popup with:
   - Today's totals broken down into Uncached input / Output / Cached input / Sessions / Turns
-  - A stacked bar chart you can switch between **1 day** (hourly), **7 days**, or **30 days**
+  - A stacked **7-day** bar chart (Uncached input / Output / Cached input)
 - **Auto-refresh** every 2 minutes; manual **Refresh** button in the popup
 - **Auto-start at login** (optional, one command)
 
@@ -55,12 +55,9 @@ py -m venv .venv
 
 | Action | Result |
 |---|---|
-| Left-click the tray icon | Open the details popup |
+| Left-click the tray icon | Open the details popup (today's totals + 7-day chart) |
 | Right-click the tray icon | Menu: Show details / Refresh now / Quit |
 | Hover the tray icon | Tooltip with today total + turn/session counts |
-| `1 day` button | Hourly bars for today |
-| `7 days` button (default) | Daily bars, 7-day stacked |
-| `30 days` button | Daily bars, 30-day stacked |
 
 CLI flags (work for both the `.exe` and `python tray_app.py`):
 
@@ -144,7 +141,7 @@ A `.github/workflows/release.yml` is in the repo for the day GitHub-hosted runne
 ```
 TokenTray\
 ├── tray_app.py           # QApplication + QSystemTrayIcon + refresh timer
-├── popup_window.py       # Frameless popup + 1/7/30-day chart
+├── popup_window.py       # Frameless popup + 7-day chart
 ├── icon_renderer.py      # Tray badge with today-token-count overlay
 ├── usage_core.py         # Telemetry log parsing + day/hour bucketing
 ├── install_startup.py    # Startup-folder shortcut install/remove
