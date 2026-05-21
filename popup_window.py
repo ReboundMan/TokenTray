@@ -33,10 +33,14 @@ DEFAULT_WINDOW = 7  # Fixed look-back window in days
 
 def _app_version() -> str:
     try:
-        from importlib.metadata import version
-        return version("tokentray")
+        from _version import __version__
+        return __version__
     except Exception:
-        return "0.1.0"
+        try:
+            from importlib.metadata import version
+            return version("tokentray")
+        except Exception:
+            return "0.0.0"
 
 
 class _Stat(QWidget):

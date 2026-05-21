@@ -151,10 +151,14 @@ def main() -> int:
         return remove()
     if "--version" in sys.argv:
         try:
-            from importlib.metadata import version
-            print(f"tokentray {version('tokentray')}")
+            from _version import __version__
+            print(f"tokentray {__version__}")
         except Exception:
-            print("tokentray 0.1.0")
+            try:
+                from importlib.metadata import version
+                print(f"tokentray {version('tokentray')}")
+            except Exception:
+                print("tokentray 0.0.0")
         return 0
 
     # NOTE: QApplication must exist before any Qt static query that touches

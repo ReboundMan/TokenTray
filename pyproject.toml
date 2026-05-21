@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tokentray"
-version = "0.1.0"
+version = "0.2.0"
 description = "Windows systray app showing live GitHub Copilot CLI token usage."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -45,4 +45,4 @@ tokentray-uninstall-startup = "install_startup:remove"
 tokentray = "tray_app:main"
 
 [tool.setuptools]
-py-modules = ["tray_app", "popup_window", "icon_renderer", "usage_core", "install_startup"]
+py-modules = ["tray_app", "popup_window", "icon_renderer", "usage_core", "install_startup", "_version"]
