@@ -7,4 +7,4 @@ falls back. Keeping the version here lets the popup, ``pyproject.toml``
 relying on package metadata at runtime.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

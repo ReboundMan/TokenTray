@@ -12,7 +12,7 @@ from PyQt6.QtCharts import (
     QStackedBarSeries,
     QValueAxis,
 )
-from PyQt6.QtCore import QMargins, Qt
+from PyQt6.QtCore import QEvent, QMargins, Qt
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -166,6 +166,14 @@ class PopupWindow(QWidget):
         v.addLayout(footer)
 
         self._close_btn.clicked.connect(self.hide)
+
+    # ------------------------------------------------------------------
+    def event(self, e: QEvent) -> bool:
+        # Light dismiss: hide when the popup loses activation (user clicked
+        # somewhere else, switched apps, etc.).
+        if e.type() == QEvent.Type.WindowDeactivate and self.isVisible():
+            self.hide()
+        return super().event(e)
 
     # ------------------------------------------------------------------
     @property
