@@ -49,8 +49,10 @@ from pathlib import Path
 from typing import Iterable
 
 from usage_core import UsageEvent, iter_usage_events
+from tokentray.parsers import iter_all_events
+from tokentray.parsers.agency_events import LOG_ROOT as AGENCY_LOG_ROOT
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 TRIAL_DAYS = 60
 COFFEE_PROMPT_CADENCE_DAYS = 21
 DB_FILENAME = "history.db"
@@ -250,6 +252,27 @@ def _this_month_range_utc(tz=None) -> tuple[datetime, datetime]:
     return start, end
 
 
+def _period_range_utc(
+    period: str, *, tz=None
+) -> tuple[datetime | None, datetime | None]:
+    """Resolve a named period to a (start_utc, end_utc) pair.
+
+    ``"all_time"`` returns ``(None, None)`` so the caller's WHERE clause
+    is skipped entirely; the other periods reuse the same local-tz
+    boundary helpers as :meth:`HistoryStore.summarize_today` and
+    friends so the breakdowns line up exactly with the summary cards.
+    """
+    if period == "today":
+        return _today_range_utc(tz)
+    if period == "week":
+        return _this_week_range_utc(tz)
+    if period == "month":
+        return _this_month_range_utc(tz)
+    if period == "all_time":
+        return None, None
+    raise ValueError(f"Unknown period: {period!r}")
+
+
 # ---------------------------------------------------------------------------
 # Store
 # ---------------------------------------------------------------------------
@@ -262,7 +285,9 @@ CREATE TABLE IF NOT EXISTS events (
     input_tokens       INTEGER NOT NULL DEFAULT 0,
     output_tokens      INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
-    cache_write_tokens INTEGER NOT NULL DEFAULT 0
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    host_app           TEXT,
+    model              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts_utc);
 CREATE TABLE IF NOT EXISTS meta (
@@ -270,6 +295,21 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 """
+
+# Indexes that reference columns added by a migration are created
+# AFTER :meth:`HistoryStore._migrate_schema` runs so a legacy v1 DB
+# (which doesn't yet have host_app / model columns) doesn't fail the
+# index DDL with "no such column".
+_POST_MIGRATION_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_events_host_app ON events(host_app);
+CREATE INDEX IF NOT EXISTS idx_events_model ON events(model);
+"""
+
+# Label used when a row predates the Phase 3 migration (host_app /
+# model are NULL) or when the parser could not attribute a value. Kept
+# as a single constant so the UI surfaces one consistent label and the
+# value-of-time math in AgencyUsageReport can recognize it.
+UNKNOWN_LABEL = "Unknown"
 
 
 class HistoryStore:
@@ -331,6 +371,9 @@ class HistoryStore:
     def _init_schema(self, *, now_utc: datetime) -> None:
         with closing(self._conn.cursor()) as cur:
             cur.executescript(_SCHEMA_SQL)
+        self._migrate_schema()
+        with closing(self._conn.cursor()) as cur:
+            cur.executescript(_POST_MIGRATION_INDEX_SQL)
         if self._get_meta("schema_version") is None:
             self._set_meta("schema_version", SCHEMA_VERSION)
         if self._get_meta("first_seen_at_utc") is None:
@@ -346,6 +389,43 @@ class HistoryStore:
         last_seen = self._parse_meta_dt("last_seen_at_utc") or now_utc
         new_last = max(last_seen, now_utc)
         self._set_meta("last_seen_at_utc", _normalize_ts(new_last))
+
+    def _migrate_schema(self) -> None:
+        """Apply forward-only ALTER TABLE migrations for legacy databases.
+
+        Phase 3 (schema_version 1 -> 2) adds the nullable ``host_app`` and
+        ``model`` columns and their supporting indexes. ``CREATE TABLE
+        IF NOT EXISTS`` covers brand-new DBs; this method covers DBs
+        that already exist with the v1 schema. ``ALTER TABLE`` is
+        wrapped in a try/except so a partial prior migration (column
+        already added, version not bumped) is a no-op rather than a
+        crash.
+
+        New rows surface ``host_app`` / ``model`` from the parser; old
+        rows keep NULL and are bucketed as
+        :data:`UNKNOWN_LABEL` by :meth:`totals_by_host` /
+        :meth:`totals_by_model`. No backfill is attempted - the rows
+        predate Phase 2's host attribution fix anyway, so we cannot
+        accurately attribute them after the fact.
+        """
+        current = self._get_meta("schema_version")
+        # New-DB path: tables were just created with the v2 schema; the
+        # version stamp lands below.
+        if current is None:
+            return
+        if current == SCHEMA_VERSION:
+            return
+        if current == "1":
+            for ddl in (
+                "ALTER TABLE events ADD COLUMN host_app TEXT",
+                "ALTER TABLE events ADD COLUMN model TEXT",
+            ):
+                try:
+                    self._conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    # Column already exists from a partial prior run.
+                    pass
+            self._set_meta("schema_version", "2")
 
     def _get_meta(self, key: str) -> str | None:
         row = self._conn.execute(
@@ -523,10 +603,18 @@ class HistoryStore:
         events that occurred while recording was enabled, and the same
         log file may contain events that straddle a "user turned recording
         back on" boundary.
+
+        Agency events flagged ``is_estimated=True`` (active sessions that
+        have not yet emitted a ``session.shutdown`` rollup) are also
+        dropped: persisting them would double-count once the rollup
+        lands, since the estimated per-turn events have different
+        ``event_id`` hashes than the canonical single rollup row.
         """
         cutoff = self._parse_meta_dt("recording_active_since_utc")
         rows = []
         for ev in events:
+            if getattr(ev, "is_estimated", False):
+                continue
             ts_raw = ev.timestamp
             if ts_raw.tzinfo is None:
                 ts_aware = ts_raw.replace(tzinfo=timezone.utc)
@@ -545,6 +633,8 @@ class HistoryStore:
                     int(ev.output_tokens),
                     int(ev.cache_read_tokens),
                     int(ev.cache_write_tokens),
+                    getattr(ev, "host_app", None),
+                    getattr(ev, "model", None),
                 )
             )
         if not rows:
@@ -553,45 +643,79 @@ class HistoryStore:
         self._conn.executemany(
             "INSERT OR IGNORE INTO events("
             "event_id, ts_utc, session_id, "
-            "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
+            "host_app, model"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         after = self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         return after - before
 
-    def ingest_logs(self, log_dir: Path | None = None) -> int:
-        """Scan ``log_dir`` and ingest events from any log file whose
-        ``(size, mtime_ns)`` changed since the last successful ingest.
+    def ingest_logs(
+        self,
+        log_dir: Path | None = None,
+        *,
+        agency_root: Path | None = None,
+    ) -> int:
+        """Scan known log roots and ingest any new events.
 
-        ``iter_usage_events`` scans the whole directory in one pass, so when
-        *anything* has changed we re-parse the dir (PRIMARY KEY dedup makes
-        re-ingest idempotent) and then update every file's watermark.
-        Returns the number of rows actually added to the events table.
+        Walks both ``log_dir`` (defaults to the Copilot CLI log dir) and
+        ``agency_root`` (defaults to ``~/.agency/logs/``) and ingests
+        events from any source whose ``(size, mtime_ns)`` changed since
+        the last successful ingest. Active Agency sessions
+        (``is_estimated=True``) are not persisted by :meth:`ingest` to
+        avoid double-counting against their session.shutdown rollups;
+        but their files DO participate in the change-detection map, so
+        the next ingest after the rollup lands picks it up.
+
+        Returns the number of rows actually added.
         """
         from usage_core import LOG_DIR  # local import avoids reload cycles in tests
 
         log_dir = log_dir or LOG_DIR
-        if not log_dir.exists():
-            return 0
+        agency_root = agency_root or AGENCY_LOG_ROOT
 
         current: dict[str, str] = {}
-        for log_path in sorted(log_dir.glob("*.log")):
-            try:
-                st = log_path.stat()
-            except OSError:
-                continue
-            current[f"file:{log_path.name}"] = f"{st.st_size}:{st.st_mtime_ns}"
+        if log_dir.exists():
+            for log_path in sorted(log_dir.glob("*.log")):
+                try:
+                    st = log_path.stat()
+                except OSError:
+                    continue
+                current[f"file:{log_path.name}"] = f"{st.st_size}:{st.st_mtime_ns}"
+        if agency_root.exists():
+            for sess_dir in sorted(agency_root.glob("session_*")):
+                events_path = sess_dir / "events.jsonl"
+                if not events_path.exists():
+                    continue
+                try:
+                    st = events_path.stat()
+                except OSError:
+                    continue
+                current[f"agency:{sess_dir.name}"] = f"{st.st_size}:{st.st_mtime_ns}"
 
         if not current:
             return 0
 
-        # Cheap path: nothing changed since last successful ingest.
+        # Cheap path: nothing in either source changed since last ingest.
         if all(self._get_meta(k) == v for k, v in current.items()):
             return 0
 
         try:
-            events = list(iter_usage_events(log_dir))
+            # Re-walk both sources via the unified iterator so any new
+            # parser added to iter_all_events() is automatically picked
+            # up here without further changes.
+            from tokentray.parsers import copilot_logs as _cl
+            from tokentray.parsers import agency_events as _ae
+            _orig_log_dir = _cl.LOG_DIR
+            _orig_log_root = _ae.LOG_ROOT
+            try:
+                _cl.LOG_DIR = log_dir
+                _ae.LOG_ROOT = agency_root
+                events = list(iter_all_events())
+            finally:
+                _cl.LOG_DIR = _orig_log_dir
+                _ae.LOG_ROOT = _orig_log_root
         except Exception:
             return 0
 
@@ -659,6 +783,86 @@ class HistoryStore:
             "all_time": self.summarize_all_time(),
         }
 
+    # -- breakdowns (Advanced tab) -----------------------------------------
+
+    def _grouped_totals(
+        self,
+        column: str,
+        *,
+        start_utc: datetime | None,
+        end_utc: datetime | None,
+    ) -> dict[str, Totals]:
+        """Aggregate :class:`Totals` per distinct value of *column*.
+
+        *column* MUST be one of ``"host_app"`` or ``"model"`` - this
+        method is a private helper for the two public breakdowns and
+        the column name is interpolated into SQL, so accepting an
+        arbitrary string would be a SQL-injection footgun. Pre-Phase-3
+        rows have NULL in the new columns; they roll up under
+        :data:`UNKNOWN_LABEL` so the Advanced tab still shows their
+        contribution rather than dropping them silently.
+        """
+        if column not in ("host_app", "model"):
+            raise ValueError(f"Unsupported grouping column: {column!r}")
+        sql = (
+            f"SELECT COALESCE({column}, ?) AS bucket, "
+            "input_tokens, output_tokens, cache_read_tokens, "
+            "cache_write_tokens, session_id FROM events"
+        )
+        params: list = [UNKNOWN_LABEL]
+        if start_utc is not None and end_utc is not None:
+            sql += " WHERE ts_utc >= ? AND ts_utc < ?"
+            params.extend([_normalize_ts(start_utc), _normalize_ts(end_utc)])
+        cur = self._conn.execute(sql, params)
+        out: dict[str, Totals] = {}
+        for bucket, in_t, out_t, cr_t, cw_t, sid in cur:
+            t = out.setdefault(bucket or UNKNOWN_LABEL, Totals())
+            t.input_tokens += in_t
+            t.output_tokens += out_t
+            t.cache_read_tokens += cr_t
+            t.cache_write_tokens += cw_t
+            t.events += 1
+            if sid:
+                t.sessions.add(sid)
+        return out
+
+    def totals_by_host(
+        self,
+        *,
+        start_utc: datetime | None = None,
+        end_utc: datetime | None = None,
+        tz=None,
+        period: str | None = None,
+    ) -> dict[str, Totals]:
+        """:class:`Totals` keyed by ``host_app`` over the requested range.
+
+        Pass *period* as one of ``"today"`` / ``"week"`` / ``"month"`` /
+        ``"all_time"`` to use the same local-tz boundary logic as
+        :meth:`summarize_today` and friends. Pass explicit
+        *start_utc* / *end_utc* to override. Omit both to summarize
+        all-time. Unknown hosts (pre-Phase-3 rows) bucket as
+        :data:`UNKNOWN_LABEL`.
+        """
+        if period is not None:
+            start_utc, end_utc = _period_range_utc(period, tz=tz)
+        return self._grouped_totals("host_app", start_utc=start_utc, end_utc=end_utc)
+
+    def totals_by_model(
+        self,
+        *,
+        start_utc: datetime | None = None,
+        end_utc: datetime | None = None,
+        tz=None,
+        period: str | None = None,
+    ) -> dict[str, Totals]:
+        """:class:`Totals` keyed by ``model`` over the requested range.
+
+        See :meth:`totals_by_host` for parameter semantics.
+        """
+        if period is not None:
+            start_utc, end_utc = _period_range_utc(period, tz=tz)
+        return self._grouped_totals("model", start_utc=start_utc, end_utc=end_utc)
+
 
 __all__ = [
     "COFFEE_PROMPT_CADENCE_DAYS",
@@ -669,5 +873,6 @@ __all__ = [
     "TRIAL_DAYS",
     "TierStatus",
     "Totals",
+    "UNKNOWN_LABEL",
     "default_db_path",
 ]

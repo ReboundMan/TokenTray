@@ -32,6 +32,7 @@ class TrayApp:
             self.store = None
 
         self.popup = PopupWindow()
+        self.popup.set_history_store(self.store)
         self.popup.refresh_button.clicked.connect(self.refresh)
 
         # Per-file parse cache shared across every refresh tick. Keyed by

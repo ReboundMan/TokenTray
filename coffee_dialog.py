@@ -36,7 +36,20 @@ BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/reboundman"
 _HEADLINES = {
     "startup_nag": "Enjoying TokenTray?",
     "advanced_toggle": "Advanced history needs a quick unlock",
+    "advanced_tab": "Unlock per-tool and per-model breakdowns",
     "menu": "Support TokenTray",
+}
+
+_BODIES = {
+    "advanced_tab": (
+        "Buy me a coffee to unlock the <b>Advanced</b> tab and see "
+        "your tokens broken out per tool used (Clawpilot, Copilot CLI, "
+        "Agency, VS Code) and per model (Claude / GPT variants)."
+        "<br><br>"
+        "Everything still stays local to this machine - no telemetry, "
+        "no account, no license server. Your unlock is just a flag "
+        "stored in the local history database."
+    ),
 }
 
 _BODY = (
@@ -77,14 +90,14 @@ def show_coffee_dialog(
     """
     dlg = QDialog(parent)
     dlg.setWindowTitle("TokenTray — Buy me a coffee ☕")
-    dlg.setModal(reason == "advanced_toggle")  # block only when toggling
+    dlg.setModal(reason in ("advanced_toggle", "advanced_tab"))
 
     layout = QVBoxLayout(dlg)
 
     headline = QLabel(f"<h3>{_HEADLINES.get(reason, _HEADLINES['menu'])}</h3>")
     layout.addWidget(headline)
 
-    body = QLabel(_BODY)
+    body = QLabel(_BODIES.get(reason, _BODY))
     body.setWordWrap(True)
     body.setMinimumWidth(420)
     layout.addWidget(body)

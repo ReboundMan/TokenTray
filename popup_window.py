@@ -16,18 +16,23 @@ from PyQt6.QtCore import QEvent, QMargins, Qt
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from history_store import TierStatus, Totals
+from history_store import HistoryStore, TierStatus, Totals, UNKNOWN_LABEL
 from usage_core import DayBucket, fmt_tokens
 
 DEFAULT_WINDOW = 7  # Fixed look-back window in days
@@ -113,6 +118,17 @@ class PopupWindow(QWidget):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_today_tab(), "Today")
         self._tabs.addTab(self._build_history_tab(), "History")
+        # Advanced tab is registered now but built lazily on first activation
+        # so the popup-open path stays fast even when the supporter has lots
+        # of historical events to roll up.
+        self._advanced_placeholder = QWidget()
+        QVBoxLayout(self._advanced_placeholder)  # empty layout, replaced on demand
+        self._tabs.addTab(self._advanced_placeholder, "Advanced")
+        self._advanced_built = False
+        self._advanced_period = "today"
+        self._store: HistoryStore | None = None
+        self._latest_tier: TierStatus | None = None
+        self._tabs.currentChanged.connect(self._on_tab_changed)
         v.addWidget(self._tabs, 1)
 
         # Footer buttons (shared across tabs)
@@ -241,6 +257,257 @@ class PopupWindow(QWidget):
         return page
 
     # ------------------------------------------------------------------
+    # Advanced tab (BMC-gated: per-host + per-model breakdowns).
+    #
+    # The widgets are constructed lazily on first activation so the cold
+    # popup-open path doesn't pay for two QTableWidgets the user may never
+    # look at. Once built, both the locked and unlocked states live in a
+    # QStackedWidget; the gate just picks the right index at refresh time.
+    # ------------------------------------------------------------------
+    _PERIOD_LABELS = (
+        ("today", "Today"),
+        ("week", "Week"),
+        ("month", "Month"),
+        ("all_time", "All"),
+    )
+
+    def set_history_store(self, store: HistoryStore | None) -> None:
+        """Inject the store the Advanced tab queries for breakdowns."""
+        self._store = store
+
+    def _on_tab_changed(self, idx: int) -> None:
+        if idx != self._tabs.indexOf(self._advanced_placeholder):
+            return
+        if not self._advanced_built:
+            self._build_advanced_tab_in_place()
+            self._advanced_built = True
+        self._refresh_advanced()
+
+    def _build_advanced_tab_in_place(self) -> None:
+        # Replace the placeholder's empty layout with the real Advanced UI.
+        old_layout = self._advanced_placeholder.layout()
+        if old_layout is not None:
+            # Detach the placeholder layout so we can install the real one.
+            QWidget().setLayout(old_layout)
+        v = QVBoxLayout(self._advanced_placeholder)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(10)
+
+        self._adv_stack = QStackedWidget()
+        self._adv_locked = self._build_advanced_locked()
+        self._adv_unlocked = self._build_advanced_unlocked()
+        self._adv_stack.addWidget(self._adv_locked)
+        self._adv_stack.addWidget(self._adv_unlocked)
+        v.addWidget(self._adv_stack, 1)
+
+    def _build_advanced_locked(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(20, 20, 20, 20)
+        v.setSpacing(12)
+        v.addStretch(1)
+
+        headline = QLabel("Per-tool and per-model breakdowns are locked.")
+        headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        headline.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
+        v.addWidget(headline)
+
+        body = QLabel(
+            "TokenTray captures which host app (Clawpilot, Copilot CLI, "
+            "Agency, VS Code) and which model produced every event. "
+            "Buy me a coffee to unlock the breakdown tables on this tab."
+        )
+        body.setWordWrap(True)
+        body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body.setStyleSheet("color:#475569; font-size:12px;")
+        v.addWidget(body)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self._adv_unlock_btn = QPushButton("Buy me a coffee to unlock ☕")
+        self._adv_unlock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._adv_unlock_btn.setMinimumHeight(34)
+        self._adv_unlock_btn.setStyleSheet(
+            "QPushButton {"
+            "  padding: 6px 18px;"
+            "  border-radius: 6px;"
+            "  background: #2563eb;"
+            "  color: white;"
+            "  border: none;"
+            "  font-size: 12px;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: #1d4ed8; }"
+            "QPushButton:pressed { background: #1e40af; }"
+        )
+        self._adv_unlock_btn.clicked.connect(self._on_advanced_unlock_clicked)
+        btn_row.addWidget(self._adv_unlock_btn)
+        btn_row.addStretch(1)
+        v.addLayout(btn_row)
+        v.addStretch(2)
+        return page
+
+    def _build_advanced_unlocked(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
+
+        # Period selector (Today / Week / Month / All)
+        period_row = QHBoxLayout()
+        period_row.setSpacing(6)
+        period_lbl = QLabel("Period:")
+        period_lbl.setStyleSheet("color:#475569; font-size:11px;")
+        period_row.addWidget(period_lbl)
+        self._adv_period_group = QButtonGroup(self)
+        self._adv_period_group.setExclusive(True)
+        for key, label in self._PERIOD_LABELS:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setProperty("period_key", key)
+            btn.setStyleSheet(
+                "QPushButton {"
+                "  padding: 4px 12px;"
+                "  border-radius: 4px;"
+                "  background: #f1f5f9;"
+                "  border: 1px solid #cbd5e1;"
+                "  color: #475569;"
+                "  font-size: 11px;"
+                "  font-weight: 600;"
+                "}"
+                "QPushButton:hover { background: #e2e8f0; }"
+                "QPushButton:checked { background: #2563eb; color: white; border-color: #1d4ed8; }"
+            )
+            if key == self._advanced_period:
+                btn.setChecked(True)
+            self._adv_period_group.addButton(btn)
+            period_row.addWidget(btn)
+            btn.clicked.connect(
+                lambda _checked, k=key: self._on_advanced_period_changed(k)
+            )
+        period_row.addStretch(1)
+        v.addLayout(period_row)
+
+        # Tables row: By tool used | By model
+        tables_row = QHBoxLayout()
+        tables_row.setSpacing(10)
+
+        self._adv_host_table = self._make_breakdown_table("Tool used")
+        host_box = self._wrap_table("By tool used", self._adv_host_table)
+        tables_row.addWidget(host_box, 1)
+
+        self._adv_model_table = self._make_breakdown_table("Model")
+        model_box = self._wrap_table("By model", self._adv_model_table)
+        tables_row.addWidget(model_box, 1)
+
+        v.addLayout(tables_row, 1)
+        return page
+
+    @staticmethod
+    def _make_breakdown_table(first_col_header: str) -> QTableWidget:
+        t = QTableWidget(0, 3)
+        t.setHorizontalHeaderLabels([first_col_header, "Tokens", "Turns"])
+        t.verticalHeader().setVisible(False)
+        t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        t.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        t.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        t.setShowGrid(False)
+        t.setAlternatingRowColors(True)
+        t.setStyleSheet(
+            "QTableWidget { background: white; alternate-background-color: #f8fafc; "
+            "  font-size: 11px; border: 1px solid #e2e8f0; border-radius: 4px; }"
+            "QHeaderView::section { background: #f1f5f9; color: #475569; "
+            "  font-size: 11px; font-weight: 600; padding: 4px 6px; "
+            "  border: none; border-bottom: 1px solid #cbd5e1; }"
+        )
+        hdr = t.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        return t
+
+    @staticmethod
+    def _wrap_table(title: str, table: QTableWidget) -> QWidget:
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+        lbl = QLabel(title)
+        lbl.setStyleSheet("color:#0f172a; font-size:11px; font-weight:600;")
+        v.addWidget(lbl)
+        v.addWidget(table, 1)
+        return box
+
+    def _on_advanced_period_changed(self, key: str) -> None:
+        self._advanced_period = key
+        self._refresh_advanced()
+
+    def _on_advanced_unlock_clicked(self) -> None:
+        # Late import keeps coffee_dialog (and its Qt deps) out of the
+        # popup-open hot path.
+        if self._store is None:
+            return
+        from coffee_dialog import show_coffee_dialog
+
+        outcome = show_coffee_dialog(self, self._store, reason="advanced_tab")
+        if outcome == "unlocked":
+            # Re-pull tier so the gate re-evaluates immediately.
+            try:
+                self._latest_tier = self._store.tier_status()
+            except Exception:
+                pass
+            self._refresh_advanced()
+
+    def _advanced_unlocked_now(self) -> bool:
+        tier = self._latest_tier
+        if tier is None or self._store is None:
+            return False
+        return bool(tier.advanced_enabled and tier.supporter_purchased)
+
+    def _refresh_advanced(self) -> None:
+        if not self._advanced_built:
+            return
+        unlocked = self._advanced_unlocked_now()
+        self._adv_stack.setCurrentIndex(1 if unlocked else 0)
+        if not unlocked or self._store is None:
+            return
+        try:
+            by_host = self._store.totals_by_host(period=self._advanced_period)
+            by_model = self._store.totals_by_model(period=self._advanced_period)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return
+        self._fill_breakdown_table(self._adv_host_table, by_host)
+        self._fill_breakdown_table(self._adv_model_table, by_model)
+
+    @staticmethod
+    def _fill_breakdown_table(
+        table: QTableWidget, data: dict[str, Totals]
+    ) -> None:
+        # Sort by tokens descending; UNKNOWN_LABEL sinks to the bottom so
+        # the pre-Phase-3 backlog doesn't dominate the visual hierarchy.
+        rows = sorted(
+            data.items(),
+            key=lambda kv: (kv[0] == UNKNOWN_LABEL, -kv[1].total),
+        )
+        table.setRowCount(len(rows))
+        for r, (name, totals) in enumerate(rows):
+            name_item = QTableWidgetItem(name or UNKNOWN_LABEL)
+            tokens_item = QTableWidgetItem(fmt_tokens(totals.total))
+            turns_item = QTableWidgetItem(f"{totals.events:,}")
+            tokens_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            turns_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            table.setItem(r, 0, name_item)
+            table.setItem(r, 1, tokens_item)
+            table.setItem(r, 2, turns_item)
+
+    # ------------------------------------------------------------------
     def event(self, e: QEvent) -> bool:
         # Light dismiss: hide when the popup loses activation (user clicked
         # somewhere else, switched apps, etc.).
@@ -277,6 +544,11 @@ class PopupWindow(QWidget):
         self._updated_lbl.setText("Updated " + datetime.now().strftime("%H:%M:%S"))
         self._render_chart(chart_buckets)
         self._update_history(history, tier)
+        self._latest_tier = tier
+        # Keep the Advanced tab in lockstep with periodic refreshes once it
+        # has been opened at least once; first-open builds it on demand.
+        if self._advanced_built:
+            self._refresh_advanced()
 
     def _update_history(
         self,

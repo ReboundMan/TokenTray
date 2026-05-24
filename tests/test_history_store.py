@@ -371,11 +371,12 @@ def test_ingest_logs_skips_unchanged_dir(tmp_path, monkeypatch):
         tmp_path / "h.db",
         now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
-    added = store.ingest_logs(log_dir)
+    empty_agency = tmp_path / "no-agency"
+    added = store.ingest_logs(log_dir, agency_root=empty_agency)
     assert added == 1
 
     # No file change -> no work.
-    added2 = store.ingest_logs(log_dir)
+    added2 = store.ingest_logs(log_dir, agency_root=empty_agency)
     assert added2 == 0
     store.close()
 
