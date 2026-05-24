@@ -38,7 +38,7 @@ Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft
 TokenTray is free, open-source, and ad-free. Local recording during the
 60-day trial is unconditional. After the trial, continuing to record new
 events into the local history database is gated by a one-time
-[Buy Me a Coffee](https://www.buymeacoffee.com/jeffjame) tip — there's no
+[Buy Me a Coffee](https://buymeacoffee.com/reboundman) tip — there's no
 account, no license key, and no telemetry. The honor-system flag is stored
 locally in your history database.
 

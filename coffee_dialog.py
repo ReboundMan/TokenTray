@@ -30,8 +30,7 @@ if TYPE_CHECKING:
     from history_store import HistoryStore
 
 # NOTE: confirm the actual slug with the maintainer before shipping.
-# Default guessed from pyproject.toml author name.
-BUY_ME_A_COFFEE_URL = "https://www.buymeacoffee.com/jeffjame"
+BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/reboundman"
 
 
 _HEADLINES = {
