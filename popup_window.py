@@ -22,10 +22,12 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from history_store import TierStatus, Totals
 from usage_core import DayBucket, fmt_tokens
 
 DEFAULT_WINDOW = 7  # Fixed look-back window in days
@@ -76,8 +78,15 @@ class PopupWindow(QWidget):
         self.setStyleSheet(
             "QWidget#root { background:#ffffff; border:1px solid #cbd5e1; border-radius:10px; }"
             "QLabel { color:#0f172a; }"
+            "QTabWidget::pane { border: none; top: -1px; }"
+            "QTabBar::tab { padding: 6px 14px; margin-right: 2px; "
+            "  border: 1px solid #cbd5e1; border-bottom: none; "
+            "  border-top-left-radius: 6px; border-top-right-radius: 6px; "
+            "  background: #f1f5f9; color: #475569; font-size: 12px; "
+            "  font-weight: 600; }"
+            "QTabBar::tab:selected { background: #ffffff; color: #0f172a; }"
         )
-        self.resize(640, 480)
+        self.resize(640, 520)
 
         root = QFrame(self)
         root.setObjectName("root")
@@ -99,6 +108,49 @@ class PopupWindow(QWidget):
         self._updated_lbl.setStyleSheet("color:#64748b; font-size:11px;")
         header.addWidget(self._updated_lbl)
         v.addLayout(header)
+
+        # Tab container
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_today_tab(), "Today")
+        self._tabs.addTab(self._build_history_tab(), "History")
+        v.addWidget(self._tabs, 1)
+
+        # Footer buttons (shared across tabs)
+        footer = QHBoxLayout()
+        version_lbl = QLabel(f"v{_app_version()}")
+        version_lbl.setStyleSheet("color:#94a3b8; font-size:11px;")
+        footer.addWidget(version_lbl)
+        footer.addStretch(1)
+        self._refresh_btn = QPushButton("Refresh")
+        self._close_btn = QPushButton("Close")
+        for b in (self._refresh_btn, self._close_btn):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setMinimumHeight(28)
+            b.setStyleSheet(
+                "QPushButton {"
+                "  padding: 5px 16px;"
+                "  border-radius: 6px;"
+                "  background: #f1f5f9;"
+                "  border: 1px solid #94a3b8;"
+                "  color: #0f172a;"
+                "  font-size: 12px;"
+                "  font-weight: 600;"
+                "}"
+                "QPushButton:hover { background: #e2e8f0; border-color: #475569; }"
+                "QPushButton:pressed { background: #cbd5e1; }"
+            )
+        footer.addWidget(self._refresh_btn)
+        footer.addWidget(self._close_btn)
+        v.addLayout(footer)
+
+        self._close_btn.clicked.connect(self.hide)
+
+    # ------------------------------------------------------------------
+    def _build_today_tab(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(10)
 
         # Stat grid for "today"
         grid = QGridLayout()
@@ -136,36 +188,57 @@ class PopupWindow(QWidget):
         self._chart_view.setStyleSheet("QChartView { background: white; border: none; }")
         self._chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         v.addWidget(self._chart_view, 1)
+        return page
 
-        # Footer buttons
-        footer = QHBoxLayout()
-        version_lbl = QLabel(f"v{_app_version()}")
-        version_lbl.setStyleSheet("color:#94a3b8; font-size:11px;")
-        footer.addWidget(version_lbl)
-        footer.addStretch(1)
-        self._refresh_btn = QPushButton("Refresh")
-        self._close_btn = QPushButton("Close")
-        for b in (self._refresh_btn, self._close_btn):
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setMinimumHeight(28)
-            b.setStyleSheet(
-                "QPushButton {"
-                "  padding: 5px 16px;"
-                "  border-radius: 6px;"
-                "  background: #f1f5f9;"
-                "  border: 1px solid #94a3b8;"
-                "  color: #0f172a;"
-                "  font-size: 12px;"
-                "  font-weight: 600;"
-                "}"
-                "QPushButton:hover { background: #e2e8f0; border-color: #475569; }"
-                "QPushButton:pressed { background: #cbd5e1; }"
-            )
-        footer.addWidget(self._refresh_btn)
-        footer.addWidget(self._close_btn)
-        v.addLayout(footer)
+    # ------------------------------------------------------------------
+    def _build_history_tab(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(10)
 
-        self._close_btn.clicked.connect(self.hide)
+        self._hist_banner = QLabel("History recording is initializing…")
+        self._hist_banner.setWordWrap(True)
+        self._hist_banner.setStyleSheet(
+            "QLabel {"
+            "  background:#eff6ff; border:1px solid #bfdbfe;"
+            "  border-radius:6px; padding:8px 10px;"
+            "  color:#1e3a8a; font-size:11px;"
+            "}"
+        )
+        v.addWidget(self._hist_banner)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        self._hist_today = _Stat("Today", "#2563eb")
+        self._hist_week = _Stat("This week (Mon-Sun)", "#0f172a")
+        self._hist_month = _Stat("This month", "#0f172a")
+        self._hist_all = _Stat("All time", "#0f172a")
+        self._hist_today_turns = _Stat("Today turns", "#475569")
+        self._hist_week_turns = _Stat("Week turns", "#475569")
+        self._hist_month_turns = _Stat("Month turns", "#475569")
+        self._hist_all_turns = _Stat("All-time turns", "#475569")
+        grid.addWidget(self._hist_today, 0, 0)
+        grid.addWidget(self._hist_week, 0, 1)
+        grid.addWidget(self._hist_month, 0, 2)
+        grid.addWidget(self._hist_all, 0, 3)
+        grid.addWidget(self._hist_today_turns, 1, 0)
+        grid.addWidget(self._hist_week_turns, 1, 1)
+        grid.addWidget(self._hist_month_turns, 1, 2)
+        grid.addWidget(self._hist_all_turns, 1, 3)
+        v.addLayout(grid)
+
+        v.addStretch(1)
+
+        privacy = QLabel(
+            "Stored locally on this PC — never sent over the network. "
+            "Manage in Settings → Advanced history."
+        )
+        privacy.setWordWrap(True)
+        privacy.setStyleSheet("color:#64748b; font-size:11px;")
+        v.addWidget(privacy)
+        return page
 
     # ------------------------------------------------------------------
     def event(self, e: QEvent) -> bool:
@@ -185,8 +258,16 @@ class PopupWindow(QWidget):
         self,
         today: DayBucket,
         chart_buckets: Sequence[Any],
+        *,
+        history: dict[str, Totals] | None = None,
+        tier: TierStatus | None = None,
     ) -> None:
-        """Refresh the stats grid (always today) and the chart (selected window)."""
+        """Refresh the stats grid (always today) and the chart (selected window).
+
+        ``history`` is the dict returned by ``HistoryStore.all_summaries()``;
+        ``tier`` is the snapshot from ``HistoryStore.tier_status()``. Both are
+        optional so the popup degrades gracefully if the store isn't ready.
+        """
         self._stat_total.set_value(fmt_tokens(today.total))
         self._stat_in.set_value(fmt_tokens(today.input_tokens))
         self._stat_out.set_value(fmt_tokens(today.output_tokens))
@@ -195,6 +276,45 @@ class PopupWindow(QWidget):
         self._stat_events.set_value(str(today.events))
         self._updated_lbl.setText("Updated " + datetime.now().strftime("%H:%M:%S"))
         self._render_chart(chart_buckets)
+        self._update_history(history, tier)
+
+    def _update_history(
+        self,
+        history: dict[str, Totals] | None,
+        tier: TierStatus | None,
+    ) -> None:
+        if tier is not None:
+            self._hist_banner.setText(tier.banner_text)
+        else:
+            self._hist_banner.setText("History store unavailable.")
+
+        if history is None:
+            for tile in (
+                self._hist_today,
+                self._hist_week,
+                self._hist_month,
+                self._hist_all,
+                self._hist_today_turns,
+                self._hist_week_turns,
+                self._hist_month_turns,
+                self._hist_all_turns,
+            ):
+                tile.set_value("--")
+            return
+
+        pairs = [
+            (self._hist_today, self._hist_today_turns, history.get("today")),
+            (self._hist_week, self._hist_week_turns, history.get("week")),
+            (self._hist_month, self._hist_month_turns, history.get("month")),
+            (self._hist_all, self._hist_all_turns, history.get("all_time")),
+        ]
+        for tile, turns_tile, totals in pairs:
+            if totals is None:
+                tile.set_value("--")
+                turns_tile.set_value("--")
+            else:
+                tile.set_value(fmt_tokens(totals.total))
+                turns_tile.set_value(str(totals.events))
 
     def _render_chart(self, buckets: Sequence[Any]) -> None:
         self._chart.removeAllSeries()

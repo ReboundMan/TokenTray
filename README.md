@@ -9,10 +9,25 @@ A lightweight Windows **system tray app** that shows your live **GitHub Copilot 
 - **Tray icon** shows today's total tokens at a glance (`6.9M`, `124k`, `0`, …)
 - **Hover** for a tooltip with turn / session counts and last refresh time
 - **Click** for a popup with:
-  - Today's totals broken down into Uncached input / Output / Cached input / Sessions / Turns
-  - A stacked **7-day** bar chart (Uncached input / Output / Cached input)
+  - **Today** tab: today's totals broken down into Uncached input / Output / Cached input / Sessions / Turns, plus a stacked **7-day** bar chart
+  - **History** tab *(Advanced)*: Today / This week / This month / All-time rollups persisted across CLI log rotation
 - **Auto-refresh** every 2 minutes; manual **Refresh** button in the popup
 - **Auto-start at login** (optional, one command)
+
+### History (Advanced tier)
+
+The History tab persists per-event token usage to a local SQLite file at
+`%LOCALAPPDATA%\TokenTray\history.db` so the Day / Week / Month / All-time
+rollups survive the Copilot CLI rotating its raw log files.
+
+- **Free 60-day trial**: recording is on automatically for the first 60 days
+  after you first run a TokenTray build that includes this feature.
+- **After the trial**: recording pauses unless you tick
+  *Settings → Advanced history (record locally)*. Any rows captured during
+  the trial remain queryable forever.
+- **Privacy**: history never leaves your machine — no network calls, no
+  account, no telemetry. Uncheck the toggle at any time to opt out of
+  further recording (including during the trial).
 
 Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft IT report). It does **not** include the IDE Copilot, Clawpilot, M365 Copilot, or cloud Coding Agent — those emit telemetry elsewhere.
 
@@ -141,14 +156,17 @@ A `.github/workflows/release.yml` is in the repo for the day GitHub-hosted runne
 ```
 TokenTray\
 ├── tray_app.py           # QApplication + QSystemTrayIcon + refresh timer
-├── popup_window.py       # Frameless popup + 7-day chart
+├── popup_window.py       # Frameless popup (Today + History tabs, 7-day chart)
 ├── icon_renderer.py      # Tray badge with today-token-count overlay
 ├── usage_core.py         # Telemetry log parsing + day/hour bucketing
+├── history_store.py      # Local SQLite history + trial/tier gate
 ├── install_startup.py    # Startup-folder shortcut install/remove
 ├── run.pyw               # pythonw entry point (no console)
 ├── build.ps1             # PyInstaller + (optional) Inno Setup build script
 ├── pyproject.toml        # Package metadata + entry points
 ├── requirements.txt      # Runtime deps (kept for backward compat)
+├── tests\
+│   └── test_history_store.py  # Unit tests for the local history store
 ├── installer\
 │   └── TokenTray.iss     # Inno Setup script -> dist\TokenTray-Setup-*.exe
 ├── tools\

@@ -8,6 +8,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QAction, QCursor
 from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
+from history_store import HistoryStore
 from icon_renderer import make_badge_icon
 from popup_window import DEFAULT_WINDOW, PopupWindow
 from usage_core import bucket_by_day, fmt_tokens, iter_usage_events
@@ -19,6 +20,16 @@ class TrayApp:
     def __init__(self) -> None:
         self.app = getattr(TrayApp, "_existing_app", None) or QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
+
+        # Open the local history store. Failure here must never block the
+        # tray -- the popup degrades gracefully when self.store is None.
+        try:
+            self.store: HistoryStore | None = HistoryStore.open()
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+            self.store = None
 
         self.popup = PopupWindow()
         self.popup.refresh_button.clicked.connect(self.refresh)
@@ -44,6 +55,16 @@ class TrayApp:
         self._act_startup.setChecked(self._startup_is_installed())
         self._act_startup.toggled.connect(self._on_startup_toggled)
         settings_menu.addAction(self._act_startup)
+
+        # Advanced history (paid-tier-in-waiting) toggle. During the free
+        # trial recording is on regardless; this toggle gates recording
+        # after the trial ends. Unchecking it also opts the user out of
+        # recording during the trial (privacy escape hatch).
+        self._act_history = QAction("Advanced history (record locally)", settings_menu)
+        self._act_history.setCheckable(True)
+        self._sync_history_menu_state()
+        self._act_history.toggled.connect(self._on_history_toggled)
+        settings_menu.addAction(self._act_history)
 
         menu.addSeparator()
         menu.addAction(act_quit)
@@ -97,6 +118,56 @@ class TrayApp:
             self._act_startup.blockSignals(False)
 
     # ------------------------------------------------------------------
+    def _sync_history_menu_state(self) -> None:
+        """Reflect the current recording-enabled state in the menu checkbox."""
+        if self.store is None:
+            self._act_history.setEnabled(False)
+            self._act_history.setChecked(False)
+            self._act_history.setToolTip("History store unavailable.")
+            return
+        status = self.store.tier_status()
+        self._act_history.blockSignals(True)
+        self._act_history.setChecked(status.recording_enabled)
+        self._act_history.blockSignals(False)
+        if status.recording_opt_out:
+            # Opt-out takes precedence over the in_trial label so the
+            # tooltip never falsely implies recording is happening.
+            tip = (
+                "Local recording is paused (you opted out). "
+                "Check to resume capturing new events."
+            )
+        elif status.in_trial:
+            tip = (
+                f"Free trial: {status.trial_days_remaining} days remaining. "
+                "Uncheck to opt out of local recording."
+            )
+        elif status.advanced_enabled:
+            tip = "Advanced history active — recording locally."
+        else:
+            tip = (
+                "Trial ended. Check to resume local recording of token usage. "
+                "Existing history remains viewable either way."
+            )
+        self._act_history.setToolTip(tip)
+
+    def _on_history_toggled(self, checked: bool) -> None:
+        if self.store is None:
+            return
+        status = self.store.tier_status()
+        if status.in_trial and not checked:
+            # User is explicitly opting out during the trial.
+            self.store.set_recording_opt_out(True)
+        elif not status.in_trial:
+            # Post-trial: the toggle directly drives advanced_enabled.
+            self.store.set_advanced_enabled(checked)
+        else:
+            # In trial + checked: ensure opt-out is cleared.
+            self.store.set_recording_opt_out(False)
+        self._sync_history_menu_state()
+        # Refresh popup so the banner updates immediately.
+        self.refresh()
+
+    # ------------------------------------------------------------------
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
             QSystemTrayIcon.ActivationReason.Trigger,
@@ -116,6 +187,25 @@ class TrayApp:
             today = bucket_by_day(events, days=1)[-1]
             chart_buckets = bucket_by_day(events, days=DEFAULT_WINDOW)
 
+            history_snapshot = None
+            tier_snapshot = None
+            if self.store is not None:
+                tier_snapshot = self.store.tier_status()
+                if tier_snapshot.recording_enabled:
+                    try:
+                        self.store.ingest(events)
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                try:
+                    history_snapshot = self.store.all_summaries()
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                # Tier state can change implicitly when the trial expires
+                # mid-session; keep the menu in sync on every refresh.
+                self._sync_history_menu_state()
+
             badge = fmt_tokens(today.total) if today.total else "0"
             self.tray.setIcon(make_badge_icon(badge))
             tip = (
@@ -124,7 +214,12 @@ class TrayApp:
                 f"Updated {datetime.now().strftime('%H:%M:%S')}"
             )
             self.tray.setToolTip(tip)
-            self.popup.update_data(today, chart_buckets)
+            self.popup.update_data(
+                today,
+                chart_buckets,
+                history=history_snapshot,
+                tier=tier_snapshot,
+            )
         except Exception:
             # Never let a transient log-parse or rendering error kill the tray.
             import traceback
