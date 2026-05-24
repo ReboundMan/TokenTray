@@ -109,91 +109,94 @@ def _parse_ts(line: str) -> datetime | None:
         return None
 
 
-def iter_usage_events(log_dir: Path | None = None) -> Iterable[UsageEvent]:
-    """Yield UsageEvent records from every ``*.log`` under ``log_dir``."""
-    log_dir = log_dir or LOG_DIR
-    if not log_dir.exists():
-        return
+def _parse_log_file(log_path: Path) -> list[UsageEvent]:
+    """Parse a single ``*.log`` file into a list of :class:`UsageEvent`.
 
-    for log_path in sorted(log_dir.glob("*.log")):
-        try:
-            text = log_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+    Pulled out of :func:`iter_usage_events` so callers can amortize the
+    cost across refresh ticks via the per-file cache. Parsing semantics
+    (brace-balanced multi-line JSON, ``assistant_usage`` filter,
+    ``session_id``-required, three-tier timestamp fallback) are unchanged.
+    """
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out: list[UsageEvent] = []
+    lines = text.splitlines()
+    n = len(lines)
+    i = 0
+    while i < n:
+        if TELEMETRY_MARKER not in lines[i]:
+            i += 1
             continue
-        lines = text.splitlines()
-        n = len(lines)
-        i = 0
-        while i < n:
-            if TELEMETRY_MARKER not in lines[i]:
-                i += 1
-                continue
-            ts = _parse_ts(lines[i])
-            # JSON object starts on the next non-empty line that begins with "{"
-            j = i + 1
-            while j < n and not lines[j].lstrip().startswith("{"):
-                j += 1
-            if j >= n:
+        ts = _parse_ts(lines[i])
+        # JSON object starts on the next non-empty line that begins with "{"
+        j = i + 1
+        while j < n and not lines[j].lstrip().startswith("{"):
+            j += 1
+        if j >= n:
+            break
+        # Brace-balanced read across multiple lines.
+        depth = 0
+        start = j
+        in_str = False
+        esc = False
+        done = False
+        while j < n:
+            for ch in lines[j]:
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\" and in_str:
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        done = True
+                        break
+            if done:
                 break
-            # Brace-balanced read across multiple lines.
-            depth = 0
-            start = j
-            in_str = False
-            esc = False
-            done = False
-            while j < n:
-                for ch in lines[j]:
-                    if esc:
-                        esc = False
-                        continue
-                    if ch == "\\" and in_str:
-                        esc = True
-                        continue
-                    if ch == '"':
-                        in_str = not in_str
-                        continue
-                    if in_str:
-                        continue
-                    if ch == "{":
-                        depth += 1
-                    elif ch == "}":
-                        depth -= 1
-                        if depth == 0:
-                            done = True
-                            break
-                if done:
-                    break
-                j += 1
-            if not done:
-                break
-            block = "\n".join(lines[start : j + 1])
-            try:
-                ev = json.loads(block)
-            except json.JSONDecodeError:
-                i = j + 1
-                continue
-            if ev.get("kind") != "assistant_usage":
-                i = j + 1
-                continue
-            sid = ev.get("session_id")
-            metrics = ev.get("metrics") or {}
-            if not sid:
-                i = j + 1
-                continue
-            # Fall back to event-internal timestamp if line prefix lacked one.
-            if ts is None:
-                inner = ev.get("timestamp") or ev.get("created_at")
-                if isinstance(inner, str):
-                    try:
-                        ts = datetime.fromisoformat(inner.replace("Z", "+00:00"))
-                    except ValueError:
-                        ts = None
-            if ts is None:
-                # Last resort: file mtime
+            j += 1
+        if not done:
+            break
+        block = "\n".join(lines[start : j + 1])
+        try:
+            ev = json.loads(block)
+        except json.JSONDecodeError:
+            i = j + 1
+            continue
+        if ev.get("kind") != "assistant_usage":
+            i = j + 1
+            continue
+        sid = ev.get("session_id")
+        metrics = ev.get("metrics") or {}
+        if not sid:
+            i = j + 1
+            continue
+        # Fall back to event-internal timestamp if line prefix lacked one.
+        if ts is None:
+            inner = ev.get("timestamp") or ev.get("created_at")
+            if isinstance(inner, str):
                 try:
-                    ts = datetime.fromtimestamp(log_path.stat().st_mtime, tz=timezone.utc)
-                except OSError:
-                    ts = datetime.now(tz=timezone.utc)
-            yield UsageEvent(
+                    ts = datetime.fromisoformat(inner.replace("Z", "+00:00"))
+                except ValueError:
+                    ts = None
+        if ts is None:
+            # Last resort: file mtime
+            try:
+                ts = datetime.fromtimestamp(log_path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                ts = datetime.now(tz=timezone.utc)
+        out.append(
+            UsageEvent(
                 timestamp=ts,
                 session_id=sid,
                 input_tokens=int(metrics.get("input_tokens") or 0),
@@ -201,7 +204,79 @@ def iter_usage_events(log_dir: Path | None = None) -> Iterable[UsageEvent]:
                 cache_read_tokens=int(metrics.get("cache_read_tokens") or 0),
                 cache_write_tokens=int(metrics.get("cache_write_tokens") or 0),
             )
-            i = j + 1
+        )
+        i = j + 1
+    return out
+
+
+# Cache key per file: (size_bytes, mtime_ns) -- both move when content
+# changes. Value is the parsed event list. Caller (e.g. TrayApp) owns
+# the dict so the cache lifetime matches process lifetime.
+LogCache = dict  # alias for type hint: dict[str, tuple[int, int, list[UsageEvent]]]
+
+_PROFILE = os.environ.get("TOKENTRAY_PROFILE") == "1"
+
+
+def iter_usage_events(
+    log_dir: Path | None = None,
+    *,
+    cache: LogCache | None = None,
+) -> Iterable[UsageEvent]:
+    """Yield UsageEvent records from every ``*.log`` under ``log_dir``.
+
+    When *cache* is provided (a dict the caller owns) files whose
+    ``(size, mtime_ns)`` is unchanged since the last call are not
+    re-parsed -- their previously-parsed events are yielded from the
+    cache instead. Files no longer present on disk are evicted. This
+    keeps repeated refresh ticks cheap once the cache is warm: a typical
+    refresh re-parses only the single actively-being-written log.
+
+    Set ``TOKENTRAY_PROFILE=1`` in the environment to log per-file parse
+    timings to stderr; useful for diagnosing scan regressions without
+    requiring callers to instrument the function.
+    """
+    log_dir = log_dir or LOG_DIR
+    if not log_dir.exists():
+        return
+
+    seen: set[str] = set()
+    for log_path in sorted(log_dir.glob("*.log")):
+        try:
+            st = log_path.stat()
+        except OSError:
+            continue
+        key = log_path.name
+        seen.add(key)
+        if cache is not None:
+            entry = cache.get(key)
+            if entry is not None and entry[0] == st.st_size and entry[1] == st.st_mtime_ns:
+                if _PROFILE:
+                    import sys as _sys
+                    _sys.stderr.write(f"[tokentray.profile] cache-hit {key}\n")
+                yield from entry[2]
+                continue
+        if _PROFILE:
+            import sys as _sys
+            import time as _time
+            t0 = _time.perf_counter()
+            events = _parse_log_file(log_path)
+            _sys.stderr.write(
+                f"[tokentray.profile] parsed {key} "
+                f"({st.st_size/1e6:.1f} MB) -> {len(events)} events "
+                f"in {(_time.perf_counter()-t0)*1000:.0f} ms\n"
+            )
+        else:
+            events = _parse_log_file(log_path)
+        if cache is not None:
+            cache[key] = (st.st_size, st.st_mtime_ns, events)
+        yield from events
+
+    # Evict cache entries for files that disappeared (log rotation /
+    # manual cleanup). Keeps memory bounded over long-running tray
+    # processes.
+    if cache is not None:
+        for stale in [k for k in cache if k not in seen]:
+            del cache[stale]
 
 
 def bucket_by_day(

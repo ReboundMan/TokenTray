@@ -34,6 +34,13 @@ class TrayApp:
         self.popup = PopupWindow()
         self.popup.refresh_button.clicked.connect(self.refresh)
 
+        # Per-file parse cache shared across every refresh tick. Keyed by
+        # log filename -> (size, mtime_ns, events). Lets popup-click and
+        # the 120s timer skip re-parsing the ~98 MB of stable historical
+        # logs and re-read only whichever file the active CLI session is
+        # currently appending to.
+        self._log_cache: dict = {}
+
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(make_badge_icon("…"))
         self.tray.setToolTip("Copilot CLI tokens (loading…)")
@@ -281,7 +288,7 @@ class TrayApp:
     # ------------------------------------------------------------------
     def refresh(self) -> None:
         try:
-            events = list(iter_usage_events())
+            events = list(iter_usage_events(cache=self._log_cache))
             # Stats grid always reflects "today"; chart shows the fixed window.
             today = bucket_by_day(events, days=1)[-1]
             chart_buckets = bucket_by_day(events, days=DEFAULT_WINDOW)
