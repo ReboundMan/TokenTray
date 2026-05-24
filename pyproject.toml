@@ -24,18 +24,28 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Utilities",
 ]
-dependencies = [
+# Core install is GUI-free so headless consumers (AgencyUsageReport,
+# CI scripts) can pip-install `tokentray` and import `tokentray.parsers`
+# without dragging in PyQt6. The tray app itself adds [gui] for runtime
+# deps and [build] for the PyInstaller bundle.
+dependencies = []
+
+[project.optional-dependencies]
+gui = [
     "PyQt6>=6.6",
     "PyQt6-Charts>=6.6",
     "pywin32>=306; sys_platform == 'win32'",
 ]
-
-[project.optional-dependencies]
-build = ["pyinstaller>=6.3"]
+build = [
+    "PyQt6>=6.6",
+    "PyQt6-Charts>=6.6",
+    "pywin32>=306; sys_platform == 'win32'",
+    "pyinstaller>=6.3",
+]
 
 [project.urls]
-Homepage = "https://github.com/jeffjame_microsoft/TokenTray"
-Issues   = "https://github.com/jeffjame_microsoft/TokenTray/issues"
+Homepage = "https://github.com/ReboundMan/TokenTray"
+Issues   = "https://github.com/ReboundMan/TokenTray/issues"
 
 [project.scripts]
 tokentray-install-startup = "install_startup:install"
@@ -45,4 +55,15 @@ tokentray-uninstall-startup = "install_startup:remove"
 tokentray = "tray_app:main"
 
 [tool.setuptools]
+# Top-level modules drive the tray *application* (run.pyw, PyInstaller
+# bundle, `from usage_core import ...` etc.). They are kept flat so the
+# pre-Phase-1 import surface continues to work unchanged.
 py-modules = ["tray_app", "popup_window", "icon_renderer", "usage_core", "history_store", "coffee_dialog", "install_startup", "_version"]
+
+# The `tokentray` package is the cross-repo public API consumed by
+# AgencyUsageReport via `pip install git+https://github.com/ReboundMan/TokenTray.git`.
+# `find` discovers `tokentray` and `tokentray.parsers` automatically and
+# will pick up sibling subpackages (e.g. `tokentray.parsers.agency`) as
+# Phase 2 adds them without further pyproject edits.
+[tool.setuptools.packages.find]
+include = ["tokentray*"]
