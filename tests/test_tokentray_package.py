@@ -51,11 +51,18 @@ def _write_assistant_usage_log(
     model: str | None = "claude-opus-4.6",
     timestamp: str = "2026-05-18T15:39:28.130Z",
 ) -> None:
-    """Write a single ``assistant_usage`` telemetry block in the format
-    that ``copilot_logs._parse_log_file`` expects."""
+    """Write a realistic CLI telemetry ``assistant_usage`` block.
+
+    Real CLI logs (verified Nov 2026) put ``client_type`` at
+    ``ev["client"]["client_type"]`` ON THE SAME EVENT, and ``model``
+    at ``ev["properties"]["model"]``. This fixture matches that
+    layout so the test exercises the same code paths a production
+    log walks through."""
+    import json
     block = {
         "kind": "assistant_usage",
         "session_id": session_id,
+        "properties": {} if model is None else {"model": model},
         "metrics": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -64,13 +71,10 @@ def _write_assistant_usage_log(
         },
     }
     if client_type is not None:
-        block["client_type"] = client_type
-    if model is not None:
-        block["model"] = model
-    import json
-    payload = json.dumps(block, indent=2)
+        block["client"] = {"client_type": client_type}
     path.write_text(
-        f"{timestamp} [INFO] [Telemetry] cli.telemetry:\n{payload}\n",
+        f"{timestamp} [INFO] [Telemetry] cli.telemetry:\n"
+        f"{json.dumps(block, indent=2)}\n",
         encoding="utf-8",
     )
 
@@ -146,18 +150,54 @@ def test_iter_all_events_yields_usage_events_from_log_dir(tmp_path):
     assert by_session["s1"].host_app == "Clawpilot"
     assert by_session["s2"].host_app == "Copilot CLI"
     assert by_session["s1"].raw_model == "claude-opus-4.6"
+    assert by_session["s1"].model == "claude-opus-4.6"
     assert by_session["s1"].source_path == str(log_dir / "process-001.log")
     assert by_session["s2"].input_tokens == 200
 
 
+def test_copilot_parser_reads_legacy_client_type_locations(tmp_path):
+    """Older test fixtures and possibly older CLI versions surfaced
+    ``client_type`` at the top level or under ``properties`` rather
+    than under ``client``. The parser must still extract the right
+    host attribution from those layouts via its file-local
+    state-tracking fallback."""
+    import json
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    # Leading context block uses the legacy top-level shape; the
+    # assistant_usage block that follows has no client_type of its own.
+    (log_dir / "process-legacy.log").write_text(
+        "2026-05-18T15:39:28.000Z [INFO] [Telemetry] cli.telemetry:\n"
+        + json.dumps({"kind": "session_usage_info", "client_type": "cli-interactive"}, indent=2)
+        + "\n"
+        + "2026-05-18T15:39:29.000Z [INFO] [Telemetry] cli.telemetry:\n"
+        + json.dumps({
+            "kind": "assistant_usage",
+            "session_id": "legacy-1",
+            "properties": {"model": "gpt-5.5"},
+            "metrics": {"input_tokens": 1, "output_tokens": 2,
+                        "cache_read_tokens": 0, "cache_write_tokens": 0},
+        }, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    events = list(iter_usage_events(log_dir=log_dir))
+    assert len(events) == 1
+    assert events[0].host_app == "Copilot CLI"
+    assert events[0].model == "gpt-5.5"
+
+
 def test_iter_all_events_default_path_does_not_raise_when_dir_missing(monkeypatch, tmp_path):
-    """If ``~/.copilot/logs/`` does not exist, ``iter_all_events()`` must
-    silently yield nothing, not raise. This protects AgencyUsageReport
-    when it runs on a machine that has never had the Copilot CLI
-    installed."""
-    nowhere = tmp_path / "does-not-exist"
+    """If neither ``~/.copilot/logs/`` nor ``~/.agency/logs/`` exist,
+    ``iter_all_events()`` must silently yield nothing, not raise. This
+    protects AgencyUsageReport when it runs on a machine that has
+    never had the Copilot CLI or Agency installed."""
+    nowhere_cli = tmp_path / "does-not-exist-cli"
+    nowhere_agency = tmp_path / "does-not-exist-agency"
     from tokentray.parsers import copilot_logs as cl
-    monkeypatch.setattr(cl, "LOG_DIR", nowhere)
+    from tokentray.parsers import agency_events as ae
+    monkeypatch.setattr(cl, "LOG_DIR", nowhere_cli)
+    monkeypatch.setattr(ae, "LOG_ROOT", nowhere_agency)
     events = list(iter_all_events())
     assert events == []
 

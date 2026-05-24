@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Iterable
 
 from tokentray.parsers._common import UsageEvent
+from tokentray.parsers.model_normalize import normalize_model
 
 
 LOG_DIR = Path(os.path.expanduser("~/.copilot/logs"))
@@ -61,9 +62,16 @@ def _classify_host(client_type: str | None) -> str:
     * anything else (missing, future variants) -> ``"Copilot CLI"`` as a
       safe default so the field is never ``None`` for this source.
 
-    Phase 2 will add a path-based override so Agency-wrapped CLI sessions
-    (which ALSO emit ``client_type == "cli-server"`` but live under
-    ``~/.agency/logs/``) are tagged ``"Agency"`` instead.
+    ``client_type`` is carried on every event under
+    ``ev["client"]["client_type"]`` (verified in real telemetry as of
+    Nov 2026). Older logs and the test fixture also support the
+    top-level / ``properties.client_type`` forms; see
+    :func:`_parse_log_file` for the precedence rules.
+
+    Agency-wrapped CLI sessions write to a different log root
+    (``~/.agency/logs/``) and are parsed by ``agency_events.py``, so
+    no path-based override is needed inside this module - everything
+    under ``~/.copilot/logs/`` is Clawpilot or Copilot CLI proper.
     """
     if client_type == "cli-server":
         return "Clawpilot"
@@ -92,9 +100,20 @@ def _parse_log_file(log_path: Path) -> list[UsageEvent]:
     can amortize the cost across refresh ticks. Parsing semantics
     (brace-balanced multi-line JSON, ``assistant_usage`` filter,
     ``session_id``-required, three-tier timestamp fallback) match the
-    pre-Phase-1 implementation byte-for-byte; Phase 1 only adds the
-    ``host_app`` / ``raw_model`` / ``source_path`` provenance fields
-    on the way out.
+    pre-Phase-1 implementation byte-for-byte; Phase 1 adds the
+    ``host_app`` / ``raw_model`` / ``model`` / ``source_path``
+    provenance fields on the way out.
+
+    In real CLI telemetry (verified Nov 2026), ``client_type`` lives at
+    ``ev["client"]["client_type"]`` on every event - including
+    ``assistant_usage`` - not at the top level or under
+    ``properties``. We still capture from any encountered carrier and
+    track the most-recently-seen value as a safety net for malformed
+    or pre-existing logs that lack the nested form.
+
+    ``model`` lives under ``properties.model`` in the CLI telemetry
+    schema, NOT at the top of the JSON block (which is where it sits
+    in Agency's events.jsonl) - watch out when reading sample logs.
     """
     try:
         text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -105,6 +124,7 @@ def _parse_log_file(log_path: Path) -> list[UsageEvent]:
     lines = text.splitlines()
     n = len(lines)
     i = 0
+    current_client_type: str | None = None
     while i < n:
         if TELEMETRY_MARKER not in lines[i]:
             i += 1
@@ -153,10 +173,29 @@ def _parse_log_file(log_path: Path) -> list[UsageEvent]:
         except json.JSONDecodeError:
             i = j + 1
             continue
+        # Capture client_type from this event's own `client` block when
+        # present, falling back to legacy locations (top-level or under
+        # `properties`). Whatever we find updates the file-local
+        # tracker so any later event missing the marker still inherits
+        # the right host attribution.
+        client_obj = ev.get("client")
+        if isinstance(client_obj, dict):
+            ct = client_obj.get("client_type")
+            if isinstance(ct, str) and ct:
+                current_client_type = ct
+        else:
+            ct = ev.get("client_type")
+            if isinstance(ct, str) and ct:
+                current_client_type = ct
+            elif isinstance(ev.get("properties"), dict):
+                ct2 = ev["properties"].get("client_type")
+                if isinstance(ct2, str) and ct2:
+                    current_client_type = ct2
         if ev.get("kind") != "assistant_usage":
             i = j + 1
             continue
         sid = ev.get("session_id")
+        properties = ev.get("properties") or {}
         metrics = ev.get("metrics") or {}
         if not sid:
             i = j + 1
@@ -170,13 +209,12 @@ def _parse_log_file(log_path: Path) -> list[UsageEvent]:
                 except ValueError:
                     ts = None
         if ts is None:
-            # Last resort: file mtime
             try:
                 ts = datetime.fromtimestamp(log_path.stat().st_mtime, tz=timezone.utc)
             except OSError:
                 ts = datetime.now(tz=timezone.utc)
-        host = _classify_host(ev.get("client_type"))
-        raw_model = ev.get("model")
+        host = _classify_host(current_client_type)
+        raw_model = properties.get("model") or ev.get("model")
         if raw_model is not None and not isinstance(raw_model, str):
             raw_model = str(raw_model)
         out.append(
@@ -188,6 +226,7 @@ def _parse_log_file(log_path: Path) -> list[UsageEvent]:
                 cache_read_tokens=int(metrics.get("cache_read_tokens") or 0),
                 cache_write_tokens=int(metrics.get("cache_write_tokens") or 0),
                 host_app=host,
+                model=normalize_model(raw_model),
                 raw_model=raw_model,
                 source_path=src,
             )
