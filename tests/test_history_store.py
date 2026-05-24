@@ -11,9 +11,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from history_store import (  # noqa: E402
+    COFFEE_PROMPT_CADENCE_DAYS,
     SCHEMA_VERSION,
     TRIAL_DAYS,
     HistoryStore,
+    SupporterRequiredError,
     _normalize_ts,
 )
 from usage_core import UsageEvent  # noqa: E402
@@ -90,11 +92,14 @@ def test_trial_expiry_disables_recording(tmp_path):
 def test_advanced_toggle_reenables_recording_after_trial(tmp_path):
     t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
     store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    # v0.4: advanced recording post-trial now also requires a supporter unlock.
+    store.mark_supporter_purchased(now_utc=t0 + timedelta(days=1))
     store.set_advanced_enabled(True)
     expired = t0 + timedelta(days=TRIAL_DAYS + 5)
     status = store.tier_status(now_utc=expired)
     assert not status.in_trial
     assert status.advanced_enabled
+    assert status.supporter_purchased
     assert status.recording_enabled
     store.close()
 
@@ -133,6 +138,9 @@ def test_set_advanced_enabled_clears_opt_out(tmp_path):
     t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
     store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
     store.set_recording_opt_out(True)
+    # Toggle is called with default now (real time), well past trial.
+    # Post-trial advanced requires supporter; satisfy that precondition.
+    store.mark_supporter_purchased()
     store.set_advanced_enabled(True)
     status = store.tier_status(now_utc=t0 + timedelta(days=100))
     assert status.recording_enabled
@@ -318,6 +326,7 @@ def test_tier_status_banner_strings(tmp_path):
     assert "disabled" in store.tier_status(now_utc=t0).banner_text.lower()
 
     store.set_recording_opt_out(False)
+    store.mark_supporter_purchased(now_utc=t0 + timedelta(days=10))
     store.set_advanced_enabled(True)
     past = t0 + timedelta(days=TRIAL_DAYS + 1)
     assert "advanced" in store.tier_status(now_utc=past).banner_text.lower()
@@ -456,8 +465,9 @@ def test_advanced_enable_after_trial_does_not_backfill(tmp_path):
     after_trial = t0 + timedelta(days=TRIAL_DAYS + 5)
     assert store.tier_status(now_utc=after_trial).recording_enabled is False
 
-    # User finally enables Advanced.
+    # User finally enables Advanced (after donating).
     enable_at = datetime(2026, 4, 1, 9, 0, tzinfo=timezone.utc)
+    store.mark_supporter_purchased(now_utc=enable_at - timedelta(minutes=1))
     store.set_advanced_enabled(True, now_utc=enable_at)
 
     # New event after re-enable.
@@ -518,3 +528,151 @@ def test_local_midnight_utc_uses_per_date_offset_for_default_tz(monkeypatch):
     naive_midnight = datetime.combine(d, datetime.min.time())
     expected = naive_midnight.astimezone(timezone.utc)
     assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# v0.4 — Supporter unlock & coffee prompt cadence
+# ---------------------------------------------------------------------------
+
+def test_supporter_unlock_persists_across_reopen(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    db = tmp_path / "h.db"
+    store = HistoryStore.open(db, now_utc=t0)
+    assert not store.supporter_purchased()
+    store.mark_supporter_purchased(now_utc=t0 + timedelta(hours=2))
+    assert store.supporter_purchased()
+    store.close()
+
+    reopened = HistoryStore.open(db, now_utc=t0 + timedelta(days=10))
+    assert reopened.supporter_purchased()
+    status = reopened.tier_status(now_utc=t0 + timedelta(days=10))
+    assert status.coffee_purchased_at_utc is not None
+    reopened.close()
+
+
+def test_advanced_toggle_requires_supporter_after_trial(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    post_trial = t0 + timedelta(days=TRIAL_DAYS + 1)
+    with pytest.raises(SupporterRequiredError):
+        store.set_advanced_enabled(True, now_utc=post_trial)
+    # State must remain unchanged on failure.
+    assert not store.tier_status(now_utc=post_trial).advanced_enabled
+    store.close()
+
+
+def test_advanced_toggle_allowed_during_trial_without_supporter(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    store.set_advanced_enabled(True, now_utc=t0 + timedelta(days=5))
+    status = store.tier_status(now_utc=t0 + timedelta(days=5))
+    assert status.advanced_enabled
+    assert status.in_trial
+    assert status.recording_enabled  # trial covers recording either way
+    store.close()
+
+
+def test_advanced_toggle_succeeds_post_trial_once_supporter(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    post_trial = t0 + timedelta(days=TRIAL_DAYS + 1)
+    store.mark_supporter_purchased(now_utc=post_trial)
+    store.set_advanced_enabled(True, now_utc=post_trial)
+    status = store.tier_status(now_utc=post_trial)
+    assert status.recording_enabled
+    store.close()
+
+
+def test_should_show_coffee_prompt_during_trial_returns_false(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    assert store.should_show_coffee_prompt(now_utc=t0 + timedelta(days=10)) is False
+    store.close()
+
+
+def test_should_show_coffee_prompt_after_trial_first_time_returns_true(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    post_trial = t0 + timedelta(days=TRIAL_DAYS + 1)
+    assert store.should_show_coffee_prompt(now_utc=post_trial) is True
+    store.close()
+
+
+def test_should_show_coffee_prompt_respects_21_day_cadence(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    post_trial = t0 + timedelta(days=TRIAL_DAYS + 1)
+    store.mark_coffee_prompt_shown(now_utc=post_trial)
+    # 1 day later: still suppressed.
+    assert store.should_show_coffee_prompt(
+        now_utc=post_trial + timedelta(days=1)
+    ) is False
+    # 20 days later: still under cadence.
+    assert store.should_show_coffee_prompt(
+        now_utc=post_trial + timedelta(days=20)
+    ) is False
+    # 21 days later: due again.
+    assert store.should_show_coffee_prompt(
+        now_utc=post_trial + timedelta(days=COFFEE_PROMPT_CADENCE_DAYS)
+    ) is True
+
+
+def test_should_show_coffee_prompt_respects_suppression(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    post_trial = t0 + timedelta(days=TRIAL_DAYS + 1)
+    store.set_coffee_prompt_suppressed(True)
+    assert store.should_show_coffee_prompt(now_utc=post_trial) is False
+    # Un-suppressing brings it back.
+    store.set_coffee_prompt_suppressed(False)
+    assert store.should_show_coffee_prompt(now_utc=post_trial) is True
+    store.close()
+
+
+def test_should_show_coffee_prompt_returns_false_when_purchased(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    post_trial = t0 + timedelta(days=TRIAL_DAYS + 1)
+    store.mark_supporter_purchased(now_utc=post_trial)
+    assert store.should_show_coffee_prompt(now_utc=post_trial + timedelta(days=365)) is False
+    store.close()
+
+
+def test_mark_supporter_purchased_clears_opt_out(tmp_path):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    store.set_recording_opt_out(True)
+    assert store.tier_status(now_utc=t0).recording_opt_out
+    store.mark_supporter_purchased(now_utc=t0 + timedelta(days=1))
+    assert not store.tier_status(now_utc=t0 + timedelta(days=1)).recording_opt_out
+    store.close()
+
+
+def test_mark_supporter_purchased_is_idempotent(tmp_path):
+    """A second 'restore' click should not overwrite the original timestamp."""
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    first_call_at = t0 + timedelta(days=1)
+    store.mark_supporter_purchased(now_utc=first_call_at)
+    original = store.tier_status(now_utc=first_call_at).coffee_purchased_at_utc
+
+    later = t0 + timedelta(days=30)
+    store.mark_supporter_purchased(now_utc=later)
+    second = store.tier_status(now_utc=later).coffee_purchased_at_utc
+    assert second == original
+    store.close()
+
+
+def test_coffee_prompt_clock_rollback_does_not_refire(tmp_path):
+    """A backwards clock can't make the prompt re-fire sooner than cadence."""
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(tmp_path / "h.db", now_utc=t0)
+    post_trial = t0 + timedelta(days=TRIAL_DAYS + 1)
+    # Establish last_seen anchor at post_trial and stamp the prompt.
+    store.set_recording_opt_out(False, now_utc=post_trial)
+    store.mark_coffee_prompt_shown(now_utc=post_trial)
+    rolled_back = post_trial - timedelta(days=60)
+    # Even with the clock rolled back, effective_now should clamp to >= post_trial,
+    # so we are still inside cadence and prompt should NOT show.
+    assert store.should_show_coffee_prompt(now_utc=rolled_back) is False
+    store.close()

@@ -8,7 +8,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QAction, QCursor
 from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from history_store import HistoryStore
+from history_store import HistoryStore, SupporterRequiredError
 from icon_renderer import make_badge_icon
 from popup_window import DEFAULT_WINDOW, PopupWindow
 from usage_core import bucket_by_day, fmt_tokens, iter_usage_events
@@ -66,6 +66,15 @@ class TrayApp:
         self._act_history.toggled.connect(self._on_history_toggled)
         settings_menu.addAction(self._act_history)
 
+        settings_menu.addSeparator()
+        self._act_coffee = QAction("Buy me a coffee ☕", settings_menu)
+        self._act_coffee.triggered.connect(self._on_coffee_menu)
+        settings_menu.addAction(self._act_coffee)
+
+        self._act_restore = QAction("Restore supporter status", settings_menu)
+        self._act_restore.triggered.connect(self._on_restore_supporter)
+        settings_menu.addAction(self._act_restore)
+
         menu.addSeparator()
         menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
@@ -79,6 +88,10 @@ class TrayApp:
 
         # Initial refresh as soon as the event loop starts.
         QTimer.singleShot(50, self.refresh)
+        # Startup nag: defer until the event loop is running so any modal
+        # dialog has a proper parent (the tray) and doesn't race the
+        # initial refresh. Cadence is checked inside the helper.
+        QTimer.singleShot(750, self._maybe_show_startup_nag)
 
     # ------------------------------------------------------------------
     def _startup_is_installed(self) -> bool:
@@ -141,12 +154,17 @@ class TrayApp:
                 f"Free trial: {status.trial_days_remaining} days remaining. "
                 "Uncheck to opt out of local recording."
             )
-        elif status.advanced_enabled:
-            tip = "Advanced history active — recording locally."
+        elif status.advanced_enabled and status.supporter_purchased:
+            tip = "Advanced history active — recording locally. Thanks for the coffee!"
+        elif status.advanced_enabled and not status.supporter_purchased:
+            tip = (
+                "Advanced is enabled but locked. "
+                "Buy me a coffee to resume recording new events."
+            )
         else:
             tip = (
-                "Trial ended. Check to resume local recording of token usage. "
-                "Existing history remains viewable either way."
+                "Trial ended. Check to resume local recording (requires a "
+                "one-time coffee). Existing history remains viewable either way."
             )
         self._act_history.setToolTip(tip)
 
@@ -154,18 +172,99 @@ class TrayApp:
         if self.store is None:
             return
         status = self.store.tier_status()
-        if status.in_trial and not checked:
-            # User is explicitly opting out during the trial.
-            self.store.set_recording_opt_out(True)
-        elif not status.in_trial:
-            # Post-trial: the toggle directly drives advanced_enabled.
-            self.store.set_advanced_enabled(checked)
-        else:
-            # In trial + checked: ensure opt-out is cleared.
-            self.store.set_recording_opt_out(False)
+        try:
+            if status.in_trial and not checked:
+                # User is explicitly opting out during the trial.
+                self.store.set_recording_opt_out(True)
+            elif not status.in_trial:
+                # Post-trial: the toggle directly drives advanced_enabled.
+                # This may raise SupporterRequiredError if the user hasn't
+                # bought a coffee yet -- in which case we open the dialog.
+                self.store.set_advanced_enabled(checked)
+            else:
+                # In trial + checked: ensure opt-out is cleared.
+                self.store.set_recording_opt_out(False)
+        except SupporterRequiredError:
+            # Revert the check before showing the dialog so the menu state
+            # is honest if the user dismisses without unlocking.
+            self._sync_history_menu_state()
+            try:
+                from coffee_dialog import show_coffee_dialog
+                outcome = show_coffee_dialog(
+                    None, self.store, reason="advanced_toggle"
+                )
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                outcome = "cancelled"
+            if outcome == "unlocked":
+                # Now safe to flip the flag for real.
+                try:
+                    self.store.set_advanced_enabled(True)
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+            self._sync_history_menu_state()
+            self.refresh()
+            return
+
         self._sync_history_menu_state()
         # Refresh popup so the banner updates immediately.
         self.refresh()
+
+    # ------------------------------------------------------------------
+    def _on_coffee_menu(self) -> None:
+        if self.store is None:
+            return
+        try:
+            from coffee_dialog import show_coffee_dialog
+            show_coffee_dialog(None, self.store, reason="menu")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        self._sync_history_menu_state()
+        self.refresh()
+
+    def _on_restore_supporter(self) -> None:
+        """One-click honor-system flip for users who reinstall or wipe state."""
+        if self.store is None:
+            return
+        if self.store.supporter_purchased():
+            QMessageBox.information(
+                None,
+                "TokenTray",
+                "Supporter status is already active. Thanks for the coffee! ☕",
+            )
+            return
+        choice = QMessageBox.question(
+            None,
+            "Restore supporter status",
+            (
+                "This flips the local supporter flag without opening the "
+                "Buy Me a Coffee page. Use it only if you've previously "
+                "donated (e.g. after reinstalling).\n\nContinue?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice == QMessageBox.StandardButton.Yes:
+            self.store.mark_supporter_purchased()
+            self._sync_history_menu_state()
+            self.refresh()
+
+    def _maybe_show_startup_nag(self) -> None:
+        """Post-trial 21-day reminder. Silently no-ops during the trial."""
+        if self.store is None:
+            return
+        try:
+            if not self.store.should_show_coffee_prompt():
+                return
+            from coffee_dialog import show_coffee_dialog
+            show_coffee_dialog(None, self.store, reason="startup_nag")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        self._sync_history_menu_state()
 
     # ------------------------------------------------------------------
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:

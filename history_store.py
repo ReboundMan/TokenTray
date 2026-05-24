@@ -52,7 +52,16 @@ from usage_core import UsageEvent, iter_usage_events
 
 SCHEMA_VERSION = "1"
 TRIAL_DAYS = 60
+COFFEE_PROMPT_CADENCE_DAYS = 21
 DB_FILENAME = "history.db"
+
+
+class SupporterRequiredError(RuntimeError):
+    """Raised when post-trial recording is requested without a supporter unlock.
+
+    Callers (the tray UI) catch this and surface the "Buy me a coffee"
+    dialog instead of silently no-op-ing the toggle.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +110,7 @@ class TierStatus:
     now_utc: datetime
     advanced_enabled: bool
     recording_opt_out: bool
+    coffee_purchased_at_utc: datetime | None = None
 
     @property
     def in_trial(self) -> bool:
@@ -116,10 +126,17 @@ class TierStatus:
         return (seconds + 86_399) // 86_400
 
     @property
+    def supporter_purchased(self) -> bool:
+        return self.coffee_purchased_at_utc is not None
+
+    @property
     def recording_enabled(self) -> bool:
         if self.recording_opt_out:
             return False
-        return self.in_trial or self.advanced_enabled
+        if self.in_trial:
+            return True
+        # Post-trial: only counts if both advanced is on AND supporter unlocked.
+        return self.advanced_enabled and self.supporter_purchased
 
     @property
     def banner_text(self) -> str:
@@ -132,13 +149,18 @@ class TierStatus:
             return (
                 f"Free trial: {self.trial_days_remaining} day"
                 f"{'' if self.trial_days_remaining == 1 else 's'} remaining. "
-                "After the trial, enable Advanced history in Settings to keep recording."
+                "After the trial, buy me a coffee in Settings to keep recording."
             )
-        if self.advanced_enabled:
-            return "Advanced history active — recording locally."
+        if self.advanced_enabled and self.supporter_purchased:
+            return "Advanced history active — recording locally. Thanks for the coffee! ☕"
+        if self.advanced_enabled and not self.supporter_purchased:
+            return (
+                "Advanced history is enabled but locked. "
+                "Buy me a coffee in Settings to resume recording new events."
+            )
         return (
             "Trial ended. Recording is paused. "
-            "Enable Advanced history in Settings to resume capturing new events. "
+            "Buy me a coffee in Settings to resume capturing new events. "
             "Existing data below is still viewable."
         )
 
@@ -364,13 +386,28 @@ class HistoryStore:
             now_utc=effective_now,
             advanced_enabled=self._get_meta("advanced_enabled") == "true",
             recording_opt_out=self._get_meta("recording_opt_out") == "true",
+            coffee_purchased_at_utc=self._parse_meta_dt("coffee_purchased_at_utc"),
         )
 
     def set_advanced_enabled(
         self, enabled: bool, *, now_utc: datetime | None = None
     ) -> None:
+        """Toggle the post-trial Advanced flag.
+
+        Raises :class:`SupporterRequiredError` if the caller asks to enable
+        Advanced recording after the free trial has ended without first
+        marking the user as a supporter (via :meth:`mark_supporter_purchased`).
+        During the trial the flag can be flipped freely; it only takes
+        effect once the trial expires.
+        """
         now_utc = now_utc or datetime.now(tz=timezone.utc)
-        prior_recording = self.tier_status(now_utc=now_utc).recording_enabled
+        status = self.tier_status(now_utc=now_utc)
+        if enabled and not status.in_trial and not status.supporter_purchased:
+            raise SupporterRequiredError(
+                "Advanced history requires a supporter unlock after the "
+                "free trial. Mark the supporter as purchased first."
+            )
+        prior_recording = status.recording_enabled
         self._set_meta("advanced_enabled", "true" if enabled else "false")
         # An explicit re-enable should clear any prior opt-out so the user
         # doesn't have to flip two flags to start recording again.
@@ -385,6 +422,69 @@ class HistoryStore:
         prior_recording = self.tier_status(now_utc=now_utc).recording_enabled
         self._set_meta("recording_opt_out", "true" if opted_out else "false")
         self._maybe_advance_active_since(now_utc, prior_recording)
+
+    # -- supporter / coffee prompt -----------------------------------------
+
+    def supporter_purchased(self) -> bool:
+        return self._get_meta("coffee_purchased_at_utc") is not None
+
+    def mark_supporter_purchased(
+        self, *, now_utc: datetime | None = None
+    ) -> None:
+        """Idempotently record an honor-system "coffee bought" unlock.
+
+        The first call stamps ``coffee_purchased_at_utc``; subsequent calls
+        leave the original timestamp in place (so we don't reset it on
+        "Restore supporter status" clicks). Also clears any prior
+        ``recording_opt_out`` so the user doesn't have to flip two flags to
+        get recording going.
+        """
+        now_utc = now_utc or datetime.now(tz=timezone.utc)
+        if self._get_meta("coffee_purchased_at_utc") is None:
+            self._set_meta("coffee_purchased_at_utc", _normalize_ts(now_utc))
+        self._set_meta("recording_opt_out", "false")
+
+    def should_show_coffee_prompt(
+        self,
+        *,
+        now_utc: datetime | None = None,
+        cadence_days: int = COFFEE_PROMPT_CADENCE_DAYS,
+    ) -> bool:
+        """Whether the tray should pop the "buy me a coffee" nag on startup.
+
+        Returns False if: the user has already unlocked, they explicitly
+        suppressed the prompt, they're still in the free trial (no nag
+        during a free period), or it's been less than ``cadence_days``
+        since the last time we showed it.
+        """
+        if self._get_meta("coffee_prompt_suppressed") == "true":
+            return False
+        if self.supporter_purchased():
+            return False
+        now_utc = now_utc or datetime.now(tz=timezone.utc)
+        status = self.tier_status(now_utc=now_utc)
+        if status.in_trial:
+            return False
+        last_shown = self._parse_meta_dt("coffee_prompt_last_shown_at_utc")
+        if last_shown is None:
+            return True
+        # Use rollback-corrected effective_now so a backwards clock can't
+        # re-fire the prompt sooner than the cadence.
+        return (status.now_utc - last_shown) >= timedelta(days=cadence_days)
+
+    def mark_coffee_prompt_shown(
+        self, *, now_utc: datetime | None = None
+    ) -> None:
+        now_utc = now_utc or datetime.now(tz=timezone.utc)
+        self._set_meta(
+            "coffee_prompt_last_shown_at_utc", _normalize_ts(now_utc)
+        )
+
+    def set_coffee_prompt_suppressed(self, suppressed: bool) -> None:
+        self._set_meta(
+            "coffee_prompt_suppressed", "true" if suppressed else "false"
+        )
+
 
     def _maybe_advance_active_since(
         self, now_utc: datetime, prior_recording_enabled: bool
@@ -561,9 +661,11 @@ class HistoryStore:
 
 
 __all__ = [
+    "COFFEE_PROMPT_CADENCE_DAYS",
     "DB_FILENAME",
     "HistoryStore",
     "SCHEMA_VERSION",
+    "SupporterRequiredError",
     "TRIAL_DAYS",
     "TierStatus",
     "Totals",

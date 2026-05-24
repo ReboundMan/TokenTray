@@ -23,13 +23,29 @@ rollups survive the Copilot CLI rotating its raw log files.
 - **Free 60-day trial**: recording is on automatically for the first 60 days
   after you first run a TokenTray build that includes this feature.
 - **After the trial**: recording pauses unless you tick
-  *Settings → Advanced history (record locally)*. Any rows captured during
-  the trial remain queryable forever.
+  *Settings → Advanced history (record locally)*. Re-enabling it after the
+  trial requires a one-time honor-system "coffee" unlock — see
+  [Supporting the project](#supporting-the-project) below. Any rows captured
+  during the trial remain queryable forever.
 - **Privacy**: history never leaves your machine — no network calls, no
   account, no telemetry. Uncheck the toggle at any time to opt out of
   further recording (including during the trial).
 
 Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft IT report). It does **not** include the IDE Copilot, Clawpilot, M365 Copilot, or cloud Coding Agent — those emit telemetry elsewhere.
+
+### Supporting the project
+
+TokenTray is free, open-source, and ad-free. Local recording during the
+60-day trial is unconditional. After the trial, continuing to record new
+events into the local history database is gated by a one-time
+[Buy Me a Coffee](https://www.buymeacoffee.com/jeffjame) tip — there's no
+account, no license key, and no telemetry. The honor-system flag is stored
+locally in your history database.
+
+If you reinstall or wipe state, *Settings → Restore supporter status* flips
+the flag back without re-donating. If you'd rather not be reminded, the
+startup nag has a "Don't show again" checkbox and otherwise appears at most
+once every 21 days (and never during the free trial).
 
 ---
 
