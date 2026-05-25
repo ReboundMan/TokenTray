@@ -252,3 +252,51 @@ def test_advanced_tab_bmc_button_unlocks_both_flags(popup, store, monkeypatch):
         "(otherwise the gate stays closed and the user sees the lock screen)"
     )
     assert popup._adv_stack.currentIndex() == 1, "Advanced card should be unlocked"
+
+
+def test_advanced_table_cells_have_readable_text_color(popup, store):
+    """Regression: table rows rendered as near-white text on the white
+    background when running under the OS dark theme because the table had
+    no explicit ``color`` rule and Qt's palette resolution picked a light
+    foreground. The fix sets ``color:#0f172a`` on both QTableWidget and
+    QTableWidget::item.
+    """
+    popup.set_history_store(store)
+    store.mark_supporter_purchased()
+    store.set_advanced_enabled(True)
+    popup._latest_tier = store.tier_status()
+    popup._advanced_period = "all_time"
+    idx = _find_advanced_tab_index(popup)
+    popup._tabs.setCurrentIndex(idx)
+
+    qss = popup._adv_host_table.styleSheet()
+    assert "color: #0f172a" in qss or "color:#0f172a" in qss, (
+        "Breakdown tables must set an explicit dark text color so rows "
+        "remain readable under OS dark themes."
+    )
+    assert "QTableWidget::item" in qss, (
+        "Item-level color rule is required; QTableWidget-level color alone "
+        "doesn't always cascade to QTableWidgetItem foreground."
+    )
+
+
+def test_show_near_resets_to_today_tab(popup, qapp):
+    """Popup must always open on the Today tab. Users expect 'what am I
+    using right now' first; Advanced + History are explicit drill-downs.
+    Sticky tab state across opens was confusing.
+    """
+    from PyQt6.QtCore import QPoint
+
+    # Simulate user opening, navigating to Advanced, closing.
+    idx_adv = _find_advanced_tab_index(popup)
+    popup._tabs.setCurrentIndex(idx_adv)
+    assert popup._tabs.currentIndex() == idx_adv
+    popup.hide()
+
+    # Re-open: should reset to Today (index 0), not stay on Advanced.
+    popup.show_near(QPoint(100, 100))
+    qapp.processEvents()
+    assert popup._tabs.currentIndex() == 0, (
+        "show_near() must reset the active tab to Today on every open"
+    )
+    popup.hide()

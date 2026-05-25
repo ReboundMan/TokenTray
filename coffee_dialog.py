@@ -91,16 +91,30 @@ def show_coffee_dialog(
     dlg = QDialog(parent)
     dlg.setWindowTitle("TokenTray — Buy me a coffee ☕")
     dlg.setModal(reason in ("advanced_toggle", "advanced_tab"))
-    # Force a light surface + dark text on the dialog itself. Without this,
-    # the dialog inherits the parent popup's QLabel { color:#0f172a; } rule
-    # but renders on the OS dark-mode dialog chrome, producing dark-on-dark
-    # text that's unreadable (see issue: BMC dialog colors don't work).
-    # We only style QDialog/QLabel/QCheckBox so the action buttons still pick
-    # up the native OS theme.
+    # Force a complete light-theme palette on the dialog: white surface +
+    # dark text + explicitly-styled buttons and checkbox indicator. The
+    # previous, gentler styling left the buttons relying on the OS dark
+    # theme rendering, which combined with our forced-white background
+    # produced invisible white-on-white buttons. Styling buttons and the
+    # checkbox indicator explicitly keeps the dialog readable in any
+    # parent / OS theme combination.
     dlg.setStyleSheet(
         "QDialog { background:#ffffff; }"
         "QLabel { color:#0f172a; background:transparent; }"
         "QCheckBox { color:#0f172a; background:transparent; }"
+        "QCheckBox::indicator { width:16px; height:16px; border:1px solid #94a3b8; "
+        "  background:#ffffff; border-radius:3px; }"
+        "QCheckBox::indicator:checked { background:#0078d4; border-color:#0078d4; "
+        "  image:none; }"
+        "QDialogButtonBox { background:transparent; }"
+        "QPushButton { color:#0f172a; background:#f1f5f9; border:1px solid #cbd5e1; "
+        "  padding:6px 14px; border-radius:6px; font-size:12px; }"
+        "QPushButton:hover { background:#e2e8f0; }"
+        "QPushButton:pressed { background:#cbd5e1; }"
+        "QPushButton:default { color:#ffffff; background:#0078d4; border-color:#0078d4; "
+        "  font-weight:600; }"
+        "QPushButton:default:hover { background:#106ebe; border-color:#106ebe; }"
+        "QPushButton:default:pressed { background:#005a9e; border-color:#005a9e; }"
     )
 
     layout = QVBoxLayout(dlg)

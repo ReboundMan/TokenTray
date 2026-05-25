@@ -416,7 +416,9 @@ class PopupWindow(QWidget):
         t.setAlternatingRowColors(True)
         t.setStyleSheet(
             "QTableWidget { background: white; alternate-background-color: #f8fafc; "
+            "  color: #0f172a; "
             "  font-size: 11px; border: 1px solid #e2e8f0; border-radius: 4px; }"
+            "QTableWidget::item { color: #0f172a; }"
             "QHeaderView::section { background: #f1f5f9; color: #475569; "
             "  font-size: 11px; font-weight: 600; padding: 4px 6px; "
             "  border: none; border-bottom: 1px solid #cbd5e1; }"
@@ -659,6 +661,12 @@ class PopupWindow(QWidget):
     # ------------------------------------------------------------------
     def show_near(self, anchor_global_pos) -> None:
         """Show this popup anchored near a global QPoint (e.g. tray icon)."""
+        # Always reset to the Today tab when the popup opens. Sticky tab
+        # state across opens was confusing -- users expect the live "what
+        # am I using right now" view first; Advanced + History are explicit
+        # drill-downs you choose to navigate to each session.
+        if self._tabs.currentIndex() != 0:
+            self._tabs.setCurrentIndex(0)
         screen = QApplication.screenAt(anchor_global_pos) or QApplication.primaryScreen()
         geo = screen.availableGeometry()
         w = self.width()
