@@ -215,3 +215,40 @@ def test_unknown_label_sinks_to_bottom(popup, store):
     assert popup._adv_host_table.rowCount() == 3
     last_row = popup._adv_host_table.rowCount() - 1
     assert popup._adv_host_table.item(last_row, 0).text() == UNKNOWN_LABEL
+
+
+def test_advanced_tab_bmc_button_unlocks_both_flags(popup, store, monkeypatch):
+    """Clicking the Advanced tab's BMC unlock button should flip BOTH
+    ``coffee_purchased_at_utc`` AND ``advanced_enabled``.
+
+    Regression: a previous build only stamped supporter_purchased, so the
+    user still saw the locked card after paying because the gate is
+    ``advanced_enabled AND supporter_purchased`` and ``advanced_enabled``
+    defaults to false.
+    """
+    popup.set_history_store(store)
+    popup._latest_tier = store.tier_status()
+    idx = _find_advanced_tab_index(popup)
+    popup._tabs.setCurrentIndex(idx)
+    assert popup._adv_stack.currentIndex() == 0  # locked
+
+    # Patch the coffee dialog so the test doesn't actually pop a modal:
+    # simulate the "I bought you a coffee" outcome by marking the supporter
+    # purchased (as the real dialog would) and returning "unlocked".
+    def _fake_dialog(parent, store, *, reason="menu"):
+        store.mark_supporter_purchased()
+        return "unlocked"
+
+    import coffee_dialog
+    monkeypatch.setattr(coffee_dialog, "show_coffee_dialog", _fake_dialog)
+
+    popup._advanced_period = "all_time"
+    popup._on_advanced_unlock_clicked()
+
+    tier = store.tier_status()
+    assert tier.supporter_purchased is True, "BMC click should mark supporter purchased"
+    assert tier.advanced_enabled is True, (
+        "BMC click from Advanced tab should also flip advanced_enabled "
+        "(otherwise the gate stays closed and the user sees the lock screen)"
+    )
+    assert popup._adv_stack.currentIndex() == 1, "Advanced card should be unlocked"

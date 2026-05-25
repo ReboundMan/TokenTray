@@ -91,6 +91,17 @@ def show_coffee_dialog(
     dlg = QDialog(parent)
     dlg.setWindowTitle("TokenTray — Buy me a coffee ☕")
     dlg.setModal(reason in ("advanced_toggle", "advanced_tab"))
+    # Force a light surface + dark text on the dialog itself. Without this,
+    # the dialog inherits the parent popup's QLabel { color:#0f172a; } rule
+    # but renders on the OS dark-mode dialog chrome, producing dark-on-dark
+    # text that's unreadable (see issue: BMC dialog colors don't work).
+    # We only style QDialog/QLabel/QCheckBox so the action buttons still pick
+    # up the native OS theme.
+    dlg.setStyleSheet(
+        "QDialog { background:#ffffff; }"
+        "QLabel { color:#0f172a; background:transparent; }"
+        "QCheckBox { color:#0f172a; background:transparent; }"
+    )
 
     layout = QVBoxLayout(dlg)
 

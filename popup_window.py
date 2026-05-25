@@ -452,6 +452,16 @@ class PopupWindow(QWidget):
 
         outcome = show_coffee_dialog(self, self._store, reason="advanced_tab")
         if outcome == "unlocked":
+            # The Advanced-tab BMC button is an explicit "unlock Advanced"
+            # action, so flip BOTH gate flags. mark_supporter_purchased()
+            # only stamps coffee_purchased_at_utc; advanced_enabled is a
+            # separate meta flag that defaults to false. Without this the
+            # user would still see the locked card after paying.
+            try:
+                self._store.set_advanced_enabled(True)
+            except Exception:
+                import traceback
+                traceback.print_exc()
             # Re-pull tier so the gate re-evaluates immediately.
             try:
                 self._latest_tier = self._store.tier_status()
