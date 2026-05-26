@@ -43,10 +43,12 @@ def iter_all_events(
 
     * ``~/.copilot/logs/*.log`` via
       :func:`tokentray.parsers.copilot_logs.iter_usage_events`
-      (Clawpilot + native Copilot CLI sessions)
+      (Copilot CLI sessions, including those launched from VS Code's
+      Copilot CLI integration)
     * ``~/.agency/logs/session_*/events.jsonl`` via
-      :func:`tokentray.parsers.agency_events.iter_agency_events`
-      (Agency-wrapped sessions)
+      :func:`tokentray.parsers.agency_events.iter_agency_events`,
+      with a process-*.log fallback for newer Agency builds that
+      skip the events.jsonl writer
 
     The two callers can pass independent per-source caches so a single
     refresh re-parses only the files that actually changed since last

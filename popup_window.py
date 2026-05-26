@@ -313,7 +313,7 @@ class PopupWindow(QWidget):
         v.addWidget(headline)
 
         body = QLabel(
-            "TokenTray captures which host app (Clawpilot, Copilot CLI, "
+            "TokenTray captures which host app (Copilot CLI, "
             "Agency, VS Code) and which model produced every event. "
             "Buy me a coffee to unlock the breakdown tables on this tab."
         )

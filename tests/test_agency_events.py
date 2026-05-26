@@ -263,6 +263,139 @@ def test_iter_all_events_chains_copilot_and_agency(tmp_path, monkeypatch):
     assert by_host["Agency"][0].model == "claude-opus-4.7"
 
 
+def _write_copilot_telemetry_log(
+    log_path: Path,
+    *,
+    session_id: str,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    cache_read_tokens: int = 25,
+    cache_write_tokens: int = 10,
+    model: str = "claude-opus-4.7",
+    client_type: str = "cli-server",
+    timestamp: str = "2026-05-25T18:39:29.000Z",
+) -> None:
+    """Write one ``[Telemetry] cli.telemetry: ...`` assistant_usage block
+    in the same format the Copilot CLI binary emits to
+    ``~/.copilot/logs/`` (and that newer Agency builds capture into
+    their session dir's ``process-*.log``)."""
+    block = {
+        "kind": "assistant_usage",
+        "session_id": session_id,
+        "client": {"client_type": client_type},
+        "properties": {"model": model},
+        "metrics": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+        },
+    }
+    log_path.write_text(
+        f"{timestamp} [INFO] [Telemetry] cli.telemetry:\n"
+        f"{json.dumps(block, indent=2)}\n",
+        encoding="utf-8",
+    )
+
+
+def test_agency_process_log_fallback_when_events_jsonl_missing(tmp_path):
+    """Newer Agency builds (verified May 2026) often skip the
+    events.jsonl writer entirely. The captured copilot subprocess log
+    under the session dir still carries the same assistant_usage
+    telemetry blocks the standalone CLI emits, so iter_agency_events
+    must fall back to parsing those and stamp host_app="Agency"."""
+    sess_dir = tmp_path / "session_20260525_133850_67256"
+    sess_dir.mkdir()
+    # No events.jsonl, but a process-*.log with two assistant_usage
+    # blocks for the same session.
+    proc = sess_dir / "process-1779741539721-64332.log"
+    proc.write_text(
+        "2026-05-25T20:39:29.000Z [INFO] [Telemetry] cli.telemetry:\n"
+        + json.dumps({
+            "kind": "assistant_usage",
+            "session_id": "agency-fallback-sid",
+            "client": {"client_type": "cli-interactive"},
+            "properties": {"model": "claude-opus-4.7-1m-internal"},
+            "metrics": {"input_tokens": 100, "output_tokens": 50,
+                        "cache_read_tokens": 25, "cache_write_tokens": 10},
+        }, indent=2)
+        + "\n"
+        + "2026-05-25T20:40:00.000Z [INFO] [Telemetry] cli.telemetry:\n"
+        + json.dumps({
+            "kind": "assistant_usage",
+            "session_id": "agency-fallback-sid",
+            "client": {"client_type": "cli-interactive"},
+            "properties": {"model": "claude-opus-4.7-1m-internal"},
+            "metrics": {"input_tokens": 200, "output_tokens": 75,
+                        "cache_read_tokens": 0, "cache_write_tokens": 5},
+        }, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = list(iter_agency_events(log_root=tmp_path))
+    assert len(events) == 2
+    for ev in events:
+        assert ev.host_app == "Agency"
+        assert ev.session_id == "agency-fallback-sid"
+        assert ev.model == "claude-opus-4.7"
+        assert ev.raw_model == "claude-opus-4.7-1m-internal"
+        assert ev.is_estimated is False
+    assert events[0].input_tokens == 100
+    assert events[1].input_tokens == 200
+
+
+def test_agency_events_jsonl_takes_precedence_over_process_log(tmp_path):
+    """When BOTH events.jsonl and process-*.log exist, the parser must
+    use ONLY events.jsonl. Parsing both would double-count once the
+    session closes (events.jsonl has session-level rollups; the
+    process log has per-turn events for the same session)."""
+    sess_dir = tmp_path / "session_dual"
+    _write_events_jsonl(sess_dir, session_id="sid-dual")
+    # Drop in a process-*.log that, if read, would emit an extra event
+    # for a different (and obvious) session_id so we'd notice.
+    _write_copilot_telemetry_log(
+        sess_dir / "process-9.log",
+        session_id="must-not-appear",
+        input_tokens=99999,
+    )
+    events = list(iter_agency_events(log_root=tmp_path))
+    assert len(events) == 1
+    assert events[0].session_id == "sid-dual"
+    assert all(ev.session_id != "must-not-appear" for ev in events)
+
+
+def test_agency_fallback_cache_independent_per_process_log(tmp_path, monkeypatch):
+    """Fallback cache entries are keyed per (session_dir, process_log)
+    so multiple process logs in one session dir cache independently
+    and a later events.jsonl-keyed entry never collides."""
+    sess_dir = tmp_path / "session_multi_proc"
+    sess_dir.mkdir()
+    _write_copilot_telemetry_log(
+        sess_dir / "process-1.log", session_id="sid-multi-a"
+    )
+    _write_copilot_telemetry_log(
+        sess_dir / "process-2.log", session_id="sid-multi-b"
+    )
+    cache: dict = {}
+    first = list(iter_agency_events(log_root=tmp_path, cache=cache))
+    assert {ev.session_id for ev in first} == {"sid-multi-a", "sid-multi-b"}
+    # Two cache entries, both tuple-keyed under the same session dir.
+    proc_keys = [k for k in cache if isinstance(k, tuple) and k[0] == "proc"]
+    assert len(proc_keys) == 2
+
+    # Second call must satisfy from cache; if the parser is invoked
+    # we fail the test.
+    from tokentray.parsers import copilot_logs as cl
+    def _boom(*_a, **_k):
+        raise AssertionError("fallback parser invoked on cache hit")
+    monkeypatch.setattr(cl, "_parse_log_file", _boom)
+    from tokentray.parsers import agency_events as ae
+    monkeypatch.setattr(ae, "_parse_log_file", _boom)
+    second = list(iter_agency_events(log_root=tmp_path, cache=cache))
+    assert {ev.session_id for ev in second} == {"sid-multi-a", "sid-multi-b"}
+
+
 def test_normalize_model_collapses_aliases():
     assert normalize_model("claude-opus-4.7-1m-internal") == "claude-opus-4.7"
     assert normalize_model("claude-opus-4.7-internal") == "claude-opus-4.7"

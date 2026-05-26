@@ -37,8 +37,14 @@ class UsageEvent:
 
     Provenance (all optional; populated by Phase 1+ parsers, ignored by
     pre-Phase 1 callers):
-        host_app:       'Clawpilot' | 'Copilot CLI' | 'Agency' |
-                        'VS Code' | None (= unknown / legacy)
+        host_app:       'Copilot CLI' | 'Agency' | 'VS Code' |
+                        'Clawpilot' | None (= unknown / legacy)
+                        Note: 'Clawpilot' is a legacy value carried for
+                        rows ingested before May 2026 when the
+                        cli-server -> Clawpilot heuristic was retired.
+                        New rows never get this value because Clawpilot
+                        is an Electron desktop app that writes no token
+                        telemetry locally.
         model:          canonical normalized model name
                         ('claude-opus-4.6', 'gpt-5.5', ...) or None
         raw_model:      verbatim model id as logged (debugging aid)

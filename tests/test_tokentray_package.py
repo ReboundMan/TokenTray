@@ -11,8 +11,8 @@ These tests verify the cross-repo surface that AgencyUsageReport
   defaults so old call sites (e.g. ``history_store._event_id`` and
   test factories that build ``UsageEvent(timestamp=..., session_id=...)``
   positionally) keep working.
-* The Copilot CLI parser populates ``host_app`` from ``client_type``
-  (Clawpilot vs Copilot CLI) and stamps ``source_path``.
+* The Copilot CLI parser populates ``host_app`` as ``"Copilot CLI"``
+  regardless of ``client_type`` and stamps ``source_path``.
 * The legacy ``usage_core`` shim still re-exports the same names.
 * No PyQt import is reachable from ``import tokentray`` or
   ``import tokentray.parsers``.
@@ -147,7 +147,7 @@ def test_iter_all_events_yields_usage_events_from_log_dir(tmp_path):
     events = list(iter_usage_events(log_dir=log_dir))
     assert len(events) == 2
     by_session = {ev.session_id: ev for ev in events}
-    assert by_session["s1"].host_app == "Clawpilot"
+    assert by_session["s1"].host_app == "Copilot CLI"
     assert by_session["s2"].host_app == "Copilot CLI"
     assert by_session["s1"].raw_model == "claude-opus-4.6"
     assert by_session["s1"].model == "claude-opus-4.6"
@@ -203,7 +203,11 @@ def test_iter_all_events_default_path_does_not_raise_when_dir_missing(monkeypatc
 
 
 def test_classify_host_matrix():
-    assert _classify_host("cli-server") == "Clawpilot"
+    # The cli-server / cli-interactive distinction discriminates CLI
+    # versions, not host apps - Clawpilot is an Electron desktop app
+    # that does not write to ~/.copilot/logs/. Everything in
+    # ~/.copilot/logs/ is therefore "Copilot CLI".
+    assert _classify_host("cli-server") == "Copilot CLI"
     assert _classify_host("cli-interactive") == "Copilot CLI"
     assert _classify_host(None) == "Copilot CLI"
     assert _classify_host("future-variant") == "Copilot CLI"

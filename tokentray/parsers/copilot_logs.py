@@ -1,22 +1,37 @@
-"""Parser for GitHub Copilot CLI / Clawpilot telemetry logs.
+"""Parser for GitHub Copilot CLI telemetry logs.
 
 Reads ``~/.copilot/logs/process-*.log`` files, finds
 ``[Telemetry] cli.telemetry: { ... }`` blocks, filters on
 ``kind == "assistant_usage"``, and yields one :class:`UsageEvent` per
 block.
 
-The same log directory is shared by:
+Everything under ``~/.copilot/logs/`` is attributed to ``"Copilot CLI"``.
+The original Phase 1 spec assumed ``client_type == "cli-server"`` was a
+reliable signal for Anthropic's Clawpilot desktop runtime, but
+verification in May 2026 found that:
 
-* the interactive ``copilot`` CLI binary (events report
-  ``client_type == "cli-interactive"`` -> host_app ``"Copilot CLI"``)
-* Anthropic's Clawpilot agent runtime (events report
-  ``client_type == "cli-server"`` -> host_app ``"Clawpilot"``)
+* The standalone Copilot CLI emits ``client_type == "cli-server"`` too
+  (cli_version 1.0.31+; older versions emitted ``"cli-interactive"``),
+  so the field discriminates CLI versions, not host apps.
+* Clawpilot itself is an Electron desktop app installed at
+  ``~/AppData/Local/Programs/Clawpilot/`` that does NOT write
+  ``assistant_usage`` telemetry into ``~/.copilot/logs/`` (or anywhere
+  else locally).
 
-so a single pass over the directory captures both. Agency (which wraps
-the Copilot CLI binary) ALSO writes here, but its real per-turn data
-lives in ``~/.agency/logs/session_*/events.jsonl`` - a separate parser
-will land in Phase 2 alongside a de-duplication gate so we do not
-double-count Agency turns.
+So ``cli-server`` and ``cli-interactive`` both map to ``"Copilot CLI"``.
+Historical rows in the history DB that were stamped ``"Clawpilot"`` by
+older builds are left alone (the value is still part of the host_app
+vocabulary), but no new rows will be assigned that label from this
+parser.
+
+Agency (which wraps the Copilot CLI binary) redirects its spawned
+copilot subprocess's log to ``~/.agency/logs/session_<...>/process-*.log``
+rather than letting it land in ``~/.copilot/logs/``, so the two log
+roots are disjoint and chaining the parsers cannot double-count.
+
+The block parser is also reused by ``agency_events.py`` (via
+``_parse_log_file(..., host_override="Agency")``) when an Agency session
+has no ``events.jsonl`` but does have a captured ``process-*.log``.
 
 Parser semantics are intentionally tolerant: a malformed JSON block is
 skipped, never aborting the surrounding file; a missing line-prefix
@@ -55,28 +70,19 @@ _PROFILE = os.environ.get("TOKENTRAY_PROFILE") == "1"
 def _classify_host(client_type: str | None) -> str:
     """Map a Copilot CLI ``client_type`` to a host_app label.
 
-    ``client_type`` values observed in real telemetry:
+    Always returns ``"Copilot CLI"``. The ``client_type`` field
+    (``"cli-interactive"`` on older builds, ``"cli-server"`` on
+    1.0.31+) discriminates Copilot CLI versions, not host apps -
+    Clawpilot is a separate Electron desktop app that does not write
+    ``assistant_usage`` telemetry into ``~/.copilot/logs/``. See the
+    module docstring for the verification trail.
 
-    * ``"cli-interactive"`` -> the standalone ``copilot`` CLI
-    * ``"cli-server"`` -> Clawpilot's agent runtime
-    * anything else (missing, future variants) -> ``"Copilot CLI"`` as a
-      safe default so the field is never ``None`` for this source.
-
-    ``client_type`` is carried on every event under
-    ``ev["client"]["client_type"]`` (verified in real telemetry as of
-    Nov 2026). Older logs and the test fixture also support the
-    top-level / ``properties.client_type`` forms; see
-    :func:`_parse_log_file` for the precedence rules.
-
-    Agency-wrapped CLI sessions write to a different log root
-    (``~/.agency/logs/``) and are parsed by ``agency_events.py``, so
-    no path-based override is needed inside this module - everything
-    under ``~/.copilot/logs/`` is Clawpilot or Copilot CLI proper.
+    The function takes the same signature it had pre-fix so existing
+    callers and tests keep working; the parameter is retained for
+    documentation value and future use should a genuine discriminator
+    appear in CLI telemetry.
     """
-    if client_type == "cli-server":
-        return "Clawpilot"
-    if client_type == "cli-interactive":
-        return "Copilot CLI"
+    del client_type  # no longer used
     return "Copilot CLI"
 
 
@@ -93,16 +99,28 @@ def _parse_ts(line: str) -> datetime | None:
         return None
 
 
-def _parse_log_file(log_path: Path) -> list[UsageEvent]:
+def _parse_log_file(
+    log_path: Path,
+    *,
+    host_override: str | None = None,
+) -> list[UsageEvent]:
     """Parse a single ``*.log`` into a list of :class:`UsageEvent`.
 
     Pulled out of :func:`iter_usage_events` so the caller-provided cache
-    can amortize the cost across refresh ticks. Parsing semantics
-    (brace-balanced multi-line JSON, ``assistant_usage`` filter,
-    ``session_id``-required, three-tier timestamp fallback) match the
-    pre-Phase-1 implementation byte-for-byte; Phase 1 adds the
-    ``host_app`` / ``raw_model`` / ``model`` / ``source_path``
-    provenance fields on the way out.
+    can amortize the cost across refresh ticks, and so
+    ``agency_events`` can reuse the identical telemetry-block parser
+    on Agency-captured ``process-*.log`` files (passing
+    ``host_override="Agency"``).
+
+    When *host_override* is provided, the returned events use that
+    string verbatim for :attr:`UsageEvent.host_app` regardless of the
+    ``client_type`` value in the telemetry. When ``None``, host
+    attribution falls back to :func:`_classify_host` (always
+    ``"Copilot CLI"`` today; see that function's docstring).
+
+    Parsing semantics (brace-balanced multi-line JSON, ``assistant_usage``
+    filter, ``session_id``-required, three-tier timestamp fallback)
+    match the pre-Phase-1 implementation byte-for-byte.
 
     In real CLI telemetry (verified Nov 2026), ``client_type`` lives at
     ``ev["client"]["client_type"]`` on every event - including
@@ -213,7 +231,7 @@ def _parse_log_file(log_path: Path) -> list[UsageEvent]:
                 ts = datetime.fromtimestamp(log_path.stat().st_mtime, tz=timezone.utc)
             except OSError:
                 ts = datetime.now(tz=timezone.utc)
-        host = _classify_host(current_client_type)
+        host = host_override if host_override is not None else _classify_host(current_client_type)
         raw_model = properties.get("model") or ev.get("model")
         if raw_model is not None and not isinstance(raw_model, str):
             raw_model = str(raw_model)

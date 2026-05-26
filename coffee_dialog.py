@@ -43,7 +43,7 @@ _HEADLINES = {
 _BODIES = {
     "advanced_tab": (
         "Buy me a coffee to unlock the <b>Advanced</b> tab and see "
-        "your tokens broken out per tool used (Clawpilot, Copilot CLI, "
+        "your tokens broken out per tool used (Copilot CLI, "
         "Agency, VS Code) and per model (Claude / GPT variants)."
         "<br><br>"
         "Everything still stays local to this machine - no telemetry, "

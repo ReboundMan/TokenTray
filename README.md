@@ -31,7 +31,7 @@ rollups survive the Copilot CLI rotating its raw log files.
   account, no telemetry. Uncheck the toggle at any time to opt out of
   further recording (including during the trial).
 
-Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft IT report). It does **not** include the IDE Copilot, Clawpilot, M365 Copilot, or cloud Coding Agent — those emit telemetry elsewhere.
+Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft IT report) plus Agency-wrapped sessions. It does **not** include the IDE Copilot, Clawpilot (the Electron desktop wrapper, which writes no token telemetry locally), M365 Copilot, or cloud Coding Agent — those emit telemetry elsewhere.
 
 ### Supporting the project
 
