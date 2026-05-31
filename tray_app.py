@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 from history_store import HistoryStore, SupporterRequiredError
 from icon_renderer import make_badge_icon
 from popup_window import DEFAULT_WINDOW, PopupWindow
-from usage_core import bucket_by_day, fmt_tokens, iter_usage_events
+from usage_core import bucket_by_day, fmt_tokens
+from tokentray.parsers import iter_all_events, is_session_state_event
 
 REFRESH_MS = 120_000  # 120 seconds (matches user preference)
 
@@ -35,12 +36,14 @@ class TrayApp:
         self.popup.set_history_store(self.store)
         self.popup.refresh_button.clicked.connect(self.refresh)
 
-        # Per-file parse cache shared across every refresh tick. Keyed by
-        # log filename -> (size, mtime_ns, events). Lets popup-click and
-        # the 120s timer skip re-parsing the ~98 MB of stable historical
-        # logs and re-read only whichever file the active CLI session is
-        # currently appending to.
+        # Per-file parse caches shared across every refresh tick. Each
+        # source keeps its own dict (filename/session -> (size, mtime_ns,
+        # events)) so a popup-click or the 120s timer re-reads only the
+        # file the active session is currently appending to and skips the
+        # stable historical logs / session dirs.
         self._log_cache: dict = {}
+        self._agency_cache: dict = {}
+        self._session_state_cache: dict = {}
 
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(make_badge_icon("…"))
@@ -289,7 +292,13 @@ class TrayApp:
     # ------------------------------------------------------------------
     def refresh(self) -> None:
         try:
-            events = list(iter_usage_events(cache=self._log_cache))
+            events = list(
+                iter_all_events(
+                    cache=self._log_cache,
+                    agency_cache=self._agency_cache,
+                    session_state_cache=self._session_state_cache,
+                )
+            )
             # Stats grid always reflects "today"; chart shows the fixed window.
             today = bucket_by_day(events, days=1)[-1]
             chart_buckets = bucket_by_day(events, days=DEFAULT_WINDOW)
@@ -300,7 +309,21 @@ class TrayApp:
                 tier_snapshot = self.store.tier_status()
                 if tier_snapshot.recording_enabled:
                     try:
-                        self.store.ingest(events)
+                        # The session-state store shares session_ids with
+                        # the process logs, so drop any session-state
+                        # rollup whose session is already persisted to
+                        # avoid double-counting; the other sources stay
+                        # incremental and pass through untouched.
+                        db_sids = self.store.existing_session_ids()
+                        to_ingest = [
+                            ev
+                            for ev in events
+                            if not (
+                                is_session_state_event(ev)
+                                and ev.session_id in db_sids
+                            )
+                        ]
+                        self.store.ingest(to_ingest)
                     except Exception:
                         import traceback
                         traceback.print_exc()
@@ -361,6 +384,15 @@ def main() -> int:
                 print(f"tokentray {version('tokentray')}")
             except Exception:
                 print("tokentray 0.0.0")
+        return 0
+
+    # Refuse to start a second tray icon if one is already running (e.g. a
+    # leftover autostart entry from another install). The first instance owns
+    # the named mutex; later instances detect it and exit quietly.
+    from single_instance import acquire_single_instance
+
+    if not acquire_single_instance():
+        print("Another TokenTray instance is already running; exiting.")
         return 0
 
     # NOTE: QApplication must exist before any Qt static query that touches

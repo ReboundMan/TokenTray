@@ -188,16 +188,20 @@ def test_copilot_parser_reads_legacy_client_type_locations(tmp_path):
 
 
 def test_iter_all_events_default_path_does_not_raise_when_dir_missing(monkeypatch, tmp_path):
-    """If neither ``~/.copilot/logs/`` nor ``~/.agency/logs/`` exist,
-    ``iter_all_events()`` must silently yield nothing, not raise. This
-    protects AgencyUsageReport when it runs on a machine that has
-    never had the Copilot CLI or Agency installed."""
+    """If none of ``~/.copilot/logs/``, ``~/.agency/logs/`` or
+    ``~/.copilot/session-state/`` exist, ``iter_all_events()`` must
+    silently yield nothing, not raise. This protects AgencyUsageReport
+    when it runs on a machine that has never had the Copilot CLI or
+    Agency installed."""
     nowhere_cli = tmp_path / "does-not-exist-cli"
     nowhere_agency = tmp_path / "does-not-exist-agency"
+    nowhere_sstate = tmp_path / "does-not-exist-sstate"
     from tokentray.parsers import copilot_logs as cl
     from tokentray.parsers import agency_events as ae
+    from tokentray.parsers import copilot_session_state as ss
     monkeypatch.setattr(cl, "LOG_DIR", nowhere_cli)
     monkeypatch.setattr(ae, "LOG_ROOT", nowhere_agency)
+    monkeypatch.setattr(ss, "LOG_DIR", nowhere_sstate)
     events = list(iter_all_events())
     assert events == []
 

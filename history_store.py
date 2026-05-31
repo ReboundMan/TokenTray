@@ -51,6 +51,7 @@ from typing import Iterable
 from usage_core import UsageEvent, iter_usage_events
 from tokentray.parsers import iter_all_events
 from tokentray.parsers.agency_events import LOG_ROOT as AGENCY_LOG_ROOT
+from tokentray.parsers.copilot_session_state import LOG_DIR as SESSION_STATE_DIR
 
 SCHEMA_VERSION = "2"
 TRIAL_DAYS = 60
@@ -656,17 +657,29 @@ class HistoryStore:
         log_dir: Path | None = None,
         *,
         agency_root: Path | None = None,
+        session_state_root: Path | None = None,
     ) -> int:
         """Scan known log roots and ingest any new events.
 
-        Walks both ``log_dir`` (defaults to the Copilot CLI log dir) and
-        ``agency_root`` (defaults to ``~/.agency/logs/``) and ingests
-        events from any source whose ``(size, mtime_ns)`` changed since
-        the last successful ingest. Active Agency sessions
-        (``is_estimated=True``) are not persisted by :meth:`ingest` to
-        avoid double-counting against their session.shutdown rollups;
-        but their files DO participate in the change-detection map, so
-        the next ingest after the rollup lands picks it up.
+        Walks ``log_dir`` (Copilot CLI process logs), ``agency_root``
+        (``~/.agency/logs/``) and ``session_state_root``
+        (``~/.copilot/session-state/``, the per-session event store the
+        Copilot CLI 1.0.54+ writes instead of process-log telemetry) and
+        ingests events from any source whose ``(size, mtime_ns)`` changed
+        since the last successful ingest.
+
+        The session-state store shares ``session_id`` with the process
+        logs, so to avoid double-counting a session already persisted
+        (e.g. from a process log that has since rotated away) the set of
+        session_ids already in the DB is passed to
+        :func:`iter_all_events` as ``extra_skip_session_ids`` - which
+        applies it only to the session-state source, never to the
+        incremental process-log source.
+
+        Active session-state / Agency sessions (``is_estimated=True``)
+        are not persisted by :meth:`ingest`; their files DO participate
+        in change-detection so the next ingest after the rollup lands
+        picks it up.
 
         Returns the number of rows actually added.
         """
@@ -674,6 +687,7 @@ class HistoryStore:
 
         log_dir = log_dir or LOG_DIR
         agency_root = agency_root or AGENCY_LOG_ROOT
+        session_state_root = session_state_root or SESSION_STATE_DIR
 
         current: dict[str, str] = {}
         if log_dir.exists():
@@ -693,29 +707,49 @@ class HistoryStore:
                 except OSError:
                     continue
                 current[f"agency:{sess_dir.name}"] = f"{st.st_size}:{st.st_mtime_ns}"
+        if session_state_root.exists():
+            for sess_dir in sorted(session_state_root.glob("*")):
+                if not sess_dir.is_dir():
+                    continue
+                events_path = sess_dir / "events.jsonl"
+                if not events_path.exists():
+                    continue
+                try:
+                    st = events_path.stat()
+                except OSError:
+                    continue
+                current[f"sstate:{sess_dir.name}"] = f"{st.st_size}:{st.st_mtime_ns}"
 
         if not current:
             return 0
 
-        # Cheap path: nothing in either source changed since last ingest.
+        # Cheap path: nothing in any source changed since last ingest.
         if all(self._get_meta(k) == v for k, v in current.items()):
             return 0
 
         try:
-            # Re-walk both sources via the unified iterator so any new
+            # Re-walk every source via the unified iterator so any new
             # parser added to iter_all_events() is automatically picked
             # up here without further changes.
             from tokentray.parsers import copilot_logs as _cl
             from tokentray.parsers import agency_events as _ae
+            from tokentray.parsers import copilot_session_state as _ss
             _orig_log_dir = _cl.LOG_DIR
             _orig_log_root = _ae.LOG_ROOT
+            _orig_ss_dir = _ss.LOG_DIR
             try:
                 _cl.LOG_DIR = log_dir
                 _ae.LOG_ROOT = agency_root
-                events = list(iter_all_events())
+                _ss.LOG_DIR = session_state_root
+                events = list(
+                    iter_all_events(
+                        extra_skip_session_ids=self.existing_session_ids()
+                    )
+                )
             finally:
                 _cl.LOG_DIR = _orig_log_dir
                 _ae.LOG_ROOT = _orig_log_root
+                _ss.LOG_DIR = _orig_ss_dir
         except Exception:
             return 0
 
@@ -723,6 +757,18 @@ class HistoryStore:
         for k, v in current.items():
             self._set_meta(k, v)
         return added
+
+    def existing_session_ids(self) -> set[str]:
+        """Return the set of distinct session_ids already persisted.
+
+        Used to keep the session-state rollup parser from re-counting a
+        session that another source already recorded (the two share a
+        session_id).
+        """
+        rows = self._conn.execute(
+            "SELECT DISTINCT session_id FROM events"
+        ).fetchall()
+        return {r[0] for r in rows if r[0]}
 
     # -- queries / rollups --------------------------------------------------
 

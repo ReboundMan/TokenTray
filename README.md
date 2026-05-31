@@ -102,13 +102,30 @@ CLI flags (work for both the `.exe` and `python tray_app.py`):
 
 ## How it works
 
-`usage_core.py::iter_usage_events()` scans every `*.log` under
-`~/.copilot/logs/` for `[Telemetry] cli.telemetry:` blocks where
-`kind == "assistant_usage"`. From each block it extracts:
+The unified parser `tokentray.parsers.iter_all_events()` reads token usage
+from every known local source and de-duplicates by `session_id`:
 
-- ISO timestamp (from the log-line prefix)
+- **`~/.copilot/logs/*.log`** — Copilot CLI **≤ 1.0.53** wrote
+  `[Telemetry] cli.telemetry:` blocks where `kind == "assistant_usage"`.
+- **`~/.copilot/session-state/<id>/events.jsonl`** — Copilot CLI **1.0.54+**
+  (shipped with the Claude Opus 4.8 rollout) **stopped writing those process
+  logs** and records usage here instead. The `session.shutdown` event carries
+  the authoritative per-model rollup
+  (`modelMetrics.<model>.usage.{inputTokens, outputTokens, cacheReadTokens,
+  cacheWriteTokens}`); active sessions surface per-turn output-only estimates
+  until they close. This covers both standalone CLI and Agency-wrapped
+  sessions (`producer` = `copilot-agent` / `agency`).
+- **`~/.agency/logs/session_*/`** — older Agency builds that kept their own
+  event stream / captured process log.
+
+Because the CLI's `session_id` is shared across these sources (a session can
+appear in more than one), the process-log / Agency parsers win and their
+session_ids are passed to the session-state parser so the same session is
+never counted twice. From each event the parser extracts:
+
+- ISO timestamp
 - `session_id`
-- `metrics.input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens`
+- `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens`
 
 The CLI emits `input_tokens` as "new + cache-write tokens billed at base rate" (cache-write is a subset of input). So the displayed total is:
 

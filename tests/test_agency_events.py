@@ -249,8 +249,11 @@ def test_iter_all_events_chains_copilot_and_agency(tmp_path, monkeypatch):
     _write_events_jsonl(agency_root / "session_a", session_id="sid-agency")
 
     from tokentray.parsers import copilot_logs as cl, agency_events as ae
+    from tokentray.parsers import copilot_session_state as ss
     monkeypatch.setattr(cl, "LOG_DIR", copilot_dir)
     monkeypatch.setattr(ae, "LOG_ROOT", agency_root)
+    # Isolate from the real ~/.copilot/session-state on the test machine.
+    monkeypatch.setattr(ss, "LOG_DIR", tmp_path / "no-session-state")
 
     events = list(iter_all_events())
     by_host = {}

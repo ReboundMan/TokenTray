@@ -28,6 +28,11 @@ except ImportError as exc:  # pragma: no cover
 
 SHORTCUT_NAME = "TokenTray.lnk"
 
+# Older versions / the source-checkout autostart created a differently-named
+# shortcut. We remove these too so uninstall fully cleans up and the user
+# doesn't end up with two tray instances at sign-in.
+LEGACY_SHORTCUT_NAMES = ("TokenUsageTray.lnk",)
+
 
 def _is_frozen() -> bool:
     """True when running inside a PyInstaller bundle."""
@@ -92,11 +97,14 @@ def install() -> int:
 
 
 def remove() -> int:
-    lnk = _startup_dir() / SHORTCUT_NAME
-    if lnk.exists():
-        lnk.unlink()
-        print(f"Removed startup shortcut: {lnk}")
-    else:
+    removed = False
+    for name in (SHORTCUT_NAME, *LEGACY_SHORTCUT_NAMES):
+        lnk = _startup_dir() / name
+        if lnk.exists():
+            lnk.unlink()
+            print(f"Removed startup shortcut: {lnk}")
+            removed = True
+    if not removed:
         print("No startup shortcut found.")
     return 0
 
