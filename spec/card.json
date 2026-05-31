@@ -1,0 +1,9 @@
+{
+  "slug": "tokentray",
+  "name": "TokenTray",
+  "tagline": "Windows system-tray app showing live GitHub Copilot CLI token usage",
+  "category": "productivity",
+  "status": "live",
+  "url": "https://github.com/ReboundMan/TokenTray",
+  "auth_family": "none"
+}
