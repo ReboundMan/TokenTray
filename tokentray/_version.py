@@ -7,4 +7,4 @@ executable); this copy is what ``pip``-installed consumers read via
 ``tokentray.__version__``.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"

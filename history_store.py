@@ -53,7 +53,7 @@ from tokentray.parsers import iter_all_events
 from tokentray.parsers.agency_events import LOG_ROOT as AGENCY_LOG_ROOT
 from tokentray.parsers.copilot_session_state import LOG_DIR as SESSION_STATE_DIR
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 TRIAL_DAYS = 60
 COFFEE_PROMPT_CADENCE_DAYS = 21
 DB_FILENAME = "history.db"
@@ -193,6 +193,24 @@ def _event_id(ts_norm: str, sid: str, ev: UsageEvent) -> str:
         f"{ev.cache_read_tokens}|{ev.cache_write_tokens}".encode("utf-8")
     )
     return h.hexdigest()
+
+
+def _rollup_event_id(sid: str, host_app: str | None) -> str:
+    """Stable id for a per-session cumulative rollup.
+
+    Unlike :func:`_event_id`, this deliberately excludes token counts and
+    the timestamp so a later, larger snapshot of the same session rollup
+    (e.g. an in-progress Agency session whose ``session.shutdown`` total
+    keeps growing) maps to the same row and REPLACES the prior one rather
+    than accumulating a duplicate.
+    """
+    h = hashlib.sha1()
+    h.update(b"rollup|")
+    h.update((host_app or "").encode("utf-8"))
+    h.update(b"|")
+    h.update(sid.encode("utf-8"))
+    return h.hexdigest()
+
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +428,7 @@ class HistoryStore:
         accurately attribute them after the fact.
         """
         current = self._get_meta("schema_version")
-        # New-DB path: tables were just created with the v2 schema; the
+        # New-DB path: tables were just created with the latest schema; the
         # version stamp lands below.
         if current is None:
             return
@@ -426,7 +444,57 @@ class HistoryStore:
                 except sqlite3.OperationalError:
                     # Column already exists from a partial prior run.
                     pass
+            current = "2"
             self._set_meta("schema_version", "2")
+        if current == "2":
+            # Collapse the duplicate per-session rollup rows that earlier
+            # builds accumulated (each growing Agency ``session.shutdown``
+            # snapshot was stored as a distinct content-addressed row),
+            # then re-key the survivor to the stable rollup id so future
+            # ingests REPLACE it in place.
+            self._collapse_agency_rollups()
+            current = "3"
+            self._set_meta("schema_version", "3")
+
+    def _collapse_agency_rollups(self) -> None:
+        """Deduplicate persisted Agency rollups, one row per session.
+
+        Every persisted Agency row is a canonical ``session.shutdown``
+        rollup (the per-turn estimates are never ingested), so any two
+        rows sharing a ``session_id`` are snapshots of the same rollup.
+        Keep the largest/newest snapshot per session and re-key it to the
+        stable :func:`_rollup_event_id` so the next ingest overwrites it
+        rather than re-creating a duplicate.
+        """
+        cur = self._conn.execute(
+            "SELECT event_id, session_id, host_app, ts_utc, "
+            "input_tokens + output_tokens + cache_read_tokens AS total "
+            "FROM events WHERE host_app = 'Agency'"
+        )
+        by_sid: dict[str, list[tuple]] = {}
+        for eid, sid, host_app, ts_utc, total in cur.fetchall():
+            by_sid.setdefault(sid, []).append((eid, host_app, ts_utc, total))
+        for sid, group in by_sid.items():
+            # Survivor = latest snapshot, breaking ties on the larger
+            # cumulative total (rollups grow monotonically within a run).
+            survivor = max(group, key=lambda g: (g[2], g[3]))
+            survivor_eid, host_app, _ts, _total = survivor
+            for eid, _h, _t, _n in group:
+                if eid != survivor_eid:
+                    self._conn.execute(
+                        "DELETE FROM events WHERE event_id = ?", (eid,)
+                    )
+            stable = _rollup_event_id(sid, host_app)
+            if survivor_eid != stable:
+                # Drop any pre-existing stable-id row to avoid a PK clash,
+                # then promote the survivor to the stable id.
+                self._conn.execute(
+                    "DELETE FROM events WHERE event_id = ?", (stable,)
+                )
+                self._conn.execute(
+                    "UPDATE events SET event_id = ? WHERE event_id = ?",
+                    (stable, survivor_eid),
+                )
 
     def _get_meta(self, key: str) -> str | None:
         row = self._conn.execute(
@@ -610,9 +678,18 @@ class HistoryStore:
         dropped: persisting them would double-count once the rollup
         lands, since the estimated per-turn events have different
         ``event_id`` hashes than the canonical single rollup row.
+
+        Events flagged ``is_rollup=True`` (per-session cumulative totals
+        such as the Agency ``session.shutdown`` rollup) are keyed by
+        session via :func:`_rollup_event_id` and inserted with ``INSERT
+        OR REPLACE``. Their token counts grow across successive parses
+        while the timestamp stays fixed, so a content-addressed id would
+        store every snapshot as a new row and inflate the totals; keying
+        by session makes the latest snapshot supersede the prior one.
         """
         cutoff = self._parse_meta_dt("recording_active_since_utc")
-        rows = []
+        insert_rows = []
+        replace_rows = []
         for ev in events:
             if getattr(ev, "is_estimated", False):
                 continue
@@ -625,30 +702,38 @@ class HistoryStore:
                 continue
             ts_norm = _normalize_ts(ts_raw)
             sid = ev.session_id or ""
-            rows.append(
-                (
-                    _event_id(ts_norm, sid, ev),
-                    ts_norm,
-                    sid,
-                    int(ev.input_tokens),
-                    int(ev.output_tokens),
-                    int(ev.cache_read_tokens),
-                    int(ev.cache_write_tokens),
-                    getattr(ev, "host_app", None),
-                    getattr(ev, "model", None),
-                )
+            host_app = getattr(ev, "host_app", None)
+            row = (
+                ts_norm,
+                sid,
+                int(ev.input_tokens),
+                int(ev.output_tokens),
+                int(ev.cache_read_tokens),
+                int(ev.cache_write_tokens),
+                host_app,
+                getattr(ev, "model", None),
             )
-        if not rows:
+            if getattr(ev, "is_rollup", False):
+                replace_rows.append((_rollup_event_id(sid, host_app), *row))
+            else:
+                insert_rows.append((_event_id(ts_norm, sid, ev), *row))
+        if not insert_rows and not replace_rows:
             return 0
-        before = self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        self._conn.executemany(
-            "INSERT OR IGNORE INTO events("
+        cols = (
+            "INSERT {verb} INTO events("
             "event_id, ts_utc, session_id, "
             "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
             "host_app, model"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
+        before = self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        if insert_rows:
+            # Per-turn events are immutable; never overwrite an existing row.
+            self._conn.executemany(cols.format(verb="OR IGNORE"), insert_rows)
+        if replace_rows:
+            # Per-session rollups: a newer, larger snapshot supersedes the
+            # prior one instead of accumulating a duplicate row.
+            self._conn.executemany(cols.format(verb="OR REPLACE"), replace_rows)
         after = self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         return after - before
 

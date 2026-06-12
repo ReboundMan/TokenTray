@@ -178,6 +178,98 @@ def test_ingest_distinguishes_different_token_counts(tmp_path):
     store.close()
 
 
+def _rollup(ts, sid="agency-sess", *, i=0, o=0, cr=0, cw=0):
+    return UsageEvent(
+        timestamp=ts,
+        session_id=sid,
+        input_tokens=i,
+        output_tokens=o,
+        cache_read_tokens=cr,
+        cache_write_tokens=cw,
+        host_app="Agency",
+        is_rollup=True,
+    )
+
+
+def test_rollup_snapshots_collapse_to_single_row(tmp_path):
+    """A growing per-session rollup must REPLACE, not accumulate, rows.
+
+    Mirrors the live bug: an Agency ``session.shutdown`` rollup whose
+    cumulative token totals grow across successive parses while the
+    timestamp stays fixed. Without per-session keying each snapshot was
+    stored as a new content-addressed row, inflating the History tab.
+    """
+    store = HistoryStore.open(
+        tmp_path / "h.db",
+        now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    ts = datetime(2026, 1, 5, 10, 30, 15, 250_000, tzinfo=timezone.utc)
+    assert store.ingest([_rollup(ts, i=10, o=1, cr=5)]) == 1
+    # Same session, same ts, larger totals => supersedes the prior row.
+    assert store.ingest([_rollup(ts, i=20, o=2, cr=9)]) == 0
+    assert store.ingest([_rollup(ts, i=30, o=3, cr=12)]) == 0
+    totals = store.summarize_all_time()
+    assert totals.events == 1
+    assert totals.input_tokens == 30
+    assert totals.output_tokens == 3
+    assert totals.cache_read_tokens == 12
+    store.close()
+
+
+def test_rollup_distinct_sessions_stay_separate(tmp_path):
+    store = HistoryStore.open(
+        tmp_path / "h.db",
+        now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    ts = datetime(2026, 1, 5, 10, 30, 15, 250_000, tzinfo=timezone.utc)
+    assert store.ingest([_rollup(ts, sid="a", i=10), _rollup(ts, sid="b", i=20)]) == 2
+    assert store.summarize_all_time().events == 2
+    store.close()
+
+
+def test_migration_collapses_duplicate_agency_rollups(tmp_path):
+    """v2 -> v3 migration dedupes pre-existing duplicate rollup rows."""
+    db = tmp_path / "h.db"
+    store = HistoryStore.open(db, now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    # Force the DB back to the pre-fix schema version and inject the kind
+    # of duplicate snapshots earlier builds accumulated for one session.
+    store._set_meta("schema_version", "2")
+    ts = "2026-01-05T10:30:15.250000Z"
+    snapshots = [
+        ("id-snap-1", 10, 1, 5),
+        ("id-snap-2", 20, 2, 9),
+        ("id-snap-3", 30, 3, 12),
+    ]
+    for eid, i, o, cr in snapshots:
+        store._conn.execute(
+            "INSERT INTO events(event_id, ts_utc, session_id, "
+            "input_tokens, output_tokens, cache_read_tokens, "
+            "cache_write_tokens, host_app, model) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'Agency', NULL)",
+            (eid, ts, "dup-sess", i, o, cr, 0),
+        )
+    store.close()
+
+    # Reopening runs the migration.
+    store = HistoryStore.open(db)
+    assert store._get_meta("schema_version") == SCHEMA_VERSION
+    totals = store.summarize_all_time()
+    assert totals.events == 1
+    # Survivor is the largest/newest snapshot.
+    assert totals.input_tokens == 30
+    assert totals.output_tokens == 3
+    assert totals.cache_read_tokens == 12
+
+    # And a further ingest of the same session overwrites in place.
+    ts_dt = datetime(2026, 1, 5, 10, 30, 15, 250_000, tzinfo=timezone.utc)
+    # Push recording window back so the rollup isn't dropped as pre-trial.
+    store._set_meta("recording_active_since_utc", "2026-01-01T00:00:00.000000Z")
+    assert store.ingest([_rollup(ts_dt, sid="dup-sess", i=40, o=4, cr=20)]) == 0
+    assert store.summarize_all_time().events == 1
+    assert store.summarize_all_time().input_tokens == 40
+    store.close()
+
+
 def test_ingest_handles_naive_timestamps(tmp_path):
     """UsageEvent may carry naive datetimes (mtime fallback); store normalizes."""
     store = HistoryStore.open(

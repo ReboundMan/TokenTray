@@ -91,7 +91,7 @@ def test_v1_database_migrates_in_place(tmp_path):
 
     store = HistoryStore.open(db_path, now_utc=T0)
     try:
-        assert store._get_meta("schema_version") == "2"
+        assert store._get_meta("schema_version") == SCHEMA_VERSION
         cols = [
             row[1]
             for row in store._conn.execute("PRAGMA table_info(events)").fetchall()

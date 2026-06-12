@@ -14,15 +14,43 @@ verification in May 2026 found that:
   (cli_version 1.0.31+; older versions emitted ``"cli-interactive"``),
   so the field discriminates CLI versions, not host apps.
 * Clawpilot itself is an Electron desktop app installed at
-  ``~/AppData/Local/Programs/Clawpilot/`` that does NOT write
-  ``assistant_usage`` telemetry into ``~/.copilot/logs/`` (or anywhere
-  else locally).
+  ``~/AppData/Local/Programs/Clawpilot/``.
 
-So ``cli-server`` and ``cli-interactive`` both map to ``"Copilot CLI"``.
+So ``cli-server`` and ``cli-interactive`` both map to ``"Copilot CLI"``
+here, and ``client_type`` is NOT used to detect Clawpilot.
+
+.. note:: Clawpilot 5.1.2 update (verified May 2026)
+
+   The May-2026 conclusion that Clawpilot "writes no token telemetry
+   locally" is **outdated**. As of Clawpilot 5.1.2, the desktop app
+   spawns a Copilot *backend* session, and that backend's
+   ``assistant_usage`` telemetry **does** land in
+   ``~/.copilot/logs/process-*.log`` - keyed by the backend session id,
+   with the exact same client metadata as the standalone CLI
+   (``cli-server``, identical ``client_name`` hash), so it is
+   indistinguishable from CLI usage *by telemetry content alone*.
+
+   Clawpilot's own session bodies live encrypted under
+   ``~/.copilot/m-sessions/*.json`` (key in
+   ``~/.copilot/m-encryption-key.enc``) and carry no readable token
+   counts. However, the plaintext diagnostics log
+   ``~/.copilot/m-diagnostics.jsonl`` (plus rotated ``.old``) records
+   ``SessionManager`` lines of the form::
+
+       Backend session created for: <frontend_id> (backend ID: <backend_id>)
+       Backend session resumed for: <frontend_id> (backend ID: <backend_id>) ...
+
+   The ``<backend_id>`` values match the ``session_id`` of
+   ``assistant_usage`` events in the process logs. Joining the two lets
+   us attribute that telemetry to Clawpilot *exactly*. This parser does
+   not yet implement that join (it still labels these rows
+   ``"Copilot CLI"``); the full measurement model and the durability /
+   retroactive-reconciliation concerns are written up in
+   ``docs/specs/2026-05-clawpilot-usage-attribution.md``.
+
 Historical rows in the history DB that were stamped ``"Clawpilot"`` by
 older builds are left alone (the value is still part of the host_app
-vocabulary), but no new rows will be assigned that label from this
-parser.
+vocabulary).
 
 Agency (which wraps the Copilot CLI binary) redirects its spawned
 copilot subprocess's log to ``~/.agency/logs/session_<...>/process-*.log``
@@ -72,10 +100,15 @@ def _classify_host(client_type: str | None) -> str:
 
     Always returns ``"Copilot CLI"``. The ``client_type`` field
     (``"cli-interactive"`` on older builds, ``"cli-server"`` on
-    1.0.31+) discriminates Copilot CLI versions, not host apps -
-    Clawpilot is a separate Electron desktop app that does not write
-    ``assistant_usage`` telemetry into ``~/.copilot/logs/``. See the
-    module docstring for the verification trail.
+    1.0.31+) discriminates Copilot CLI versions, not host apps, so it
+    cannot be used to detect Clawpilot - the standalone CLI and the
+    Clawpilot backend emit identical client metadata.
+
+    Note: this means Clawpilot backend telemetry (see the module
+    docstring) is currently labelled ``"Copilot CLI"`` here. Splitting
+    it out requires the diagnostics backend-id join described in
+    ``docs/specs/2026-05-clawpilot-usage-attribution.md`` and is NOT
+    done by this function.
 
     The function takes the same signature it had pre-fix so existing
     callers and tests keep working; the parameter is retained for

@@ -31,7 +31,18 @@ rollups survive the Copilot CLI rotating its raw log files.
   account, no telemetry. Uncheck the toggle at any time to opt out of
   further recording (including during the trial).
 
-Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft IT report) plus Agency-wrapped sessions. It does **not** include the IDE Copilot, Clawpilot (the Electron desktop wrapper, which writes no token telemetry locally), M365 Copilot, or cloud Coding Agent — those emit telemetry elsewhere.
+Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft IT report) plus Agency-wrapped sessions. It does **not** include the IDE Copilot, M365 Copilot, or cloud Coding Agent — those emit telemetry elsewhere.
+
+> **Clawpilot (Electron desktop wrapper):** Earlier builds were thought to write
+> no token telemetry locally. As of Clawpilot **5.1.2** (verified May 2026) that
+> is no longer true: Clawpilot spawns a Copilot **backend** session whose
+> `assistant_usage` telemetry lands in `~/.copilot/logs/process-*.log` alongside
+> the standalone CLI's, keyed by the backend session id. Clawpilot's own session
+> bodies live encrypted under `~/.copilot/m-sessions/` (unreadable), but the
+> plaintext `~/.copilot/m-diagnostics.jsonl` maps each Clawpilot session to its
+> backend id, which lets us attribute that telemetry to Clawpilot exactly. See
+> [`docs/specs/2026-05-clawpilot-usage-attribution.md`](docs/specs/2026-05-clawpilot-usage-attribution.md)
+> for the measurement model.
 
 ### Supporting the project
 

@@ -39,12 +39,21 @@ class UsageEvent:
     pre-Phase 1 callers):
         host_app:       'Copilot CLI' | 'Agency' | 'VS Code' |
                         'Clawpilot' | None (= unknown / legacy)
-                        Note: 'Clawpilot' is a legacy value carried for
-                        rows ingested before May 2026 when the
-                        cli-server -> Clawpilot heuristic was retired.
-                        New rows never get this value because Clawpilot
-                        is an Electron desktop app that writes no token
-                        telemetry locally.
+                        Note on 'Clawpilot': between ~May 2026 and the
+                        Clawpilot 5.1.2 release this value was treated as
+                        legacy-only, after the original
+                        cli-server -> Clawpilot heuristic was retired (it
+                        keyed on a client_type field that does not
+                        actually discriminate host apps). Clawpilot is an
+                        Electron desktop app, but it is NOT telemetry-less:
+                        it spawns a Copilot backend session whose
+                        assistant_usage telemetry lands in
+                        ~/.copilot/logs/process-*.log keyed by the backend
+                        session id. That telemetry can be attributed to
+                        Clawpilot by joining the process-log session_id
+                        against the backend ids recorded in
+                        ~/.copilot/m-diagnostics.jsonl. See
+                        docs/specs/2026-05-clawpilot-usage-attribution.md.
         model:          canonical normalized model name
                         ('claude-opus-4.6', 'gpt-5.5', ...) or None
         raw_model:      verbatim model id as logged (debugging aid)
@@ -55,6 +64,13 @@ class UsageEvent:
         is_estimated:   True only when token counts were inferred (e.g.
                         VS Code, where the ``ccreq`` traces have request
                         counts but not token counts).
+        is_rollup:      True for per-session cumulative rollups (e.g. the
+                        Agency ``session.shutdown`` total) whose token
+                        counts grow across successive parses while the
+                        timestamp stays fixed. The history store keys
+                        these by session rather than by content so a
+                        later, larger snapshot REPLACES the earlier one
+                        instead of accumulating duplicate rows.
     """
 
     timestamp: datetime
@@ -68,6 +84,7 @@ class UsageEvent:
     raw_model: str | None = None
     source_path: str | None = None
     is_estimated: bool = False
+    is_rollup: bool = False
 
     @property
     def total(self) -> int:

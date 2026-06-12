@@ -182,6 +182,7 @@ def _parse_events_jsonl(events_path: Path) -> list[UsageEvent]:
                 raw_model=last_model,
                 source_path=src,
                 is_estimated=False,
+                is_rollup=True,
             )
         )
     else:

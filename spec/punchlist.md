@@ -23,3 +23,8 @@
 
 <!-- completed items (most recent on top) -->
 
+- Today vs History totals disagreed when a long-running Agency session was
+  active: the cumulative store accumulated every growing `session.shutdown`
+  rollup snapshot as a separate row. Rollups now key by session and REPLACE in
+  place; schema v3 migration collapses existing duplicates. (2026-06-07)
+
