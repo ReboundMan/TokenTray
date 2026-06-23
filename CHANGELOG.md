@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-22
+
+### Fixed
+- Advanced tab under-counting and missing per-tool / per-model detail after
+  resuming prior Copilot CLI sessions. The Copilot session-state
+  `session.shutdown` rollup has the same cumulative, fixed-timestamp shape as
+  the Agency rollup fixed in 0.6.1 but was never given rollup keying, and the
+  tray skipped any session-state event whose session id was already persisted.
+  Resuming a session (a common workflow) therefore dropped all of its later
+  growth, freezing History while the live Today tab kept climbing, and the
+  Advanced "By model" / "By tool used" tables showed only a fraction of usage.
+  Session-state rollups now key by `(session, host, model)` so multi-model
+  fleet runs keep one row per model, and a rollup is treated as the
+  authoritative total for its session: ingest purges that session's stale
+  non-rollup rows so a resumed session updates in place instead of stacking
+  duplicates. Schema bumped to v4 (adds an `is_rollup` column).
+
 ## [0.6.1] - 2026-06-12
 
 ### Fixed

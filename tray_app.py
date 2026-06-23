@@ -12,7 +12,7 @@ from history_store import HistoryStore, SupporterRequiredError
 from icon_renderer import make_badge_icon
 from popup_window import DEFAULT_WINDOW, PopupWindow
 from usage_core import bucket_by_day, fmt_tokens
-from tokentray.parsers import iter_all_events, is_session_state_event
+from tokentray.parsers import iter_all_events
 
 REFRESH_MS = 120_000  # 120 seconds (matches user preference)
 
@@ -309,21 +309,17 @@ class TrayApp:
                 tier_snapshot = self.store.tier_status()
                 if tier_snapshot.recording_enabled:
                     try:
-                        # The session-state store shares session_ids with
-                        # the process logs, so drop any session-state
-                        # rollup whose session is already persisted to
-                        # avoid double-counting; the other sources stay
-                        # incremental and pass through untouched.
-                        db_sids = self.store.existing_session_ids()
-                        to_ingest = [
-                            ev
-                            for ev in events
-                            if not (
-                                is_session_state_event(ev)
-                                and ev.session_id in db_sids
-                            )
-                        ]
-                        self.store.ingest(to_ingest)
+                        # Rollup ingestion is authoritative and self-deduping
+                        # (it purges stale rows for the same
+                        # session/host/model and REPLACEs in place), so the
+                        # full event stream can be ingested directly. This is
+                        # what lets a RESUMED session's totals keep growing
+                        # in History instead of freezing at the first
+                        # snapshot, and keeps every model of a multi-LLM
+                        # fleet run. Cross-source double-counting within a
+                        # single parse is already prevented inside
+                        # iter_all_events.
+                        self.store.ingest(events)
                     except Exception:
                         import traceback
                         traceback.print_exc()

@@ -90,6 +90,18 @@ def test_shutdown_rollup_emits_exact_event(tmp_path):
     assert ev.cache_write_tokens == 10
     assert ev.host_app == "Copilot CLI"  # producer "copilot-agent"
     assert ev.model == "claude-opus-4.8"
+    assert ev.is_rollup is True
+
+
+def test_active_estimates_are_not_rollups(tmp_path):
+    _write_session(
+        tmp_path,
+        "sid-active2",
+        assistant_outputs=[10, 20],
+        shutdown_metrics=None,
+    )
+    events = list(iter_copilot_session_state_events(tmp_path))
+    assert events and all(ev.is_rollup is False for ev in events)
 
 
 def test_multi_model_shutdown_emits_one_event_per_nonzero_model(tmp_path):

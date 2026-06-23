@@ -40,7 +40,10 @@ Token attribution strategy (per session dir), mirroring
 
 * COMPLETED sessions (``session.shutdown`` with a non-empty
   ``modelMetrics``): emit the exact per-model rollup events with
-  ``is_estimated=False``.
+  ``is_estimated=False`` and ``is_rollup=True``. The cumulative totals of
+  a resumed session grow across successive parses while keying stays
+  ``(session_id, host_app, model)``, so the history store REPLACES the
+  prior snapshot in place instead of stacking duplicate rows.
 * ACTIVE / INTERRUPTED sessions (no usable rollup yet): emit one
   ``is_estimated=True`` event per ``assistant.message`` carrying only
   ``outputTokens`` so consumers can show "something is happening" without
@@ -232,6 +235,7 @@ def _parse_session_events(events_path: Path) -> list[UsageEvent]:
                     raw_model=raw_model,
                     source_path=src,
                     is_estimated=False,
+                    is_rollup=True,
                 )
             )
         if out:

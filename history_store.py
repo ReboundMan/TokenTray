@@ -53,7 +53,7 @@ from tokentray.parsers import iter_all_events
 from tokentray.parsers.agency_events import LOG_ROOT as AGENCY_LOG_ROOT
 from tokentray.parsers.copilot_session_state import LOG_DIR as SESSION_STATE_DIR
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 TRIAL_DAYS = 60
 COFFEE_PROMPT_CADENCE_DAYS = 21
 DB_FILENAME = "history.db"
@@ -195,20 +195,29 @@ def _event_id(ts_norm: str, sid: str, ev: UsageEvent) -> str:
     return h.hexdigest()
 
 
-def _rollup_event_id(sid: str, host_app: str | None) -> str:
-    """Stable id for a per-session cumulative rollup.
+def _rollup_event_id(sid: str, host_app: str | None, model: str | None = None) -> str:
+    """Stable id for a per-session-per-model cumulative rollup.
 
     Unlike :func:`_event_id`, this deliberately excludes token counts and
     the timestamp so a later, larger snapshot of the same session rollup
-    (e.g. an in-progress Agency session whose ``session.shutdown`` total
-    keeps growing) maps to the same row and REPLACES the prior one rather
-    than accumulating a duplicate.
+    (e.g. a resumed Agency / session-state session whose
+    ``session.shutdown`` totals keep growing) maps to the same row and
+    REPLACES the prior one rather than accumulating a duplicate.
+
+    ``model`` is part of the key because the Copilot session-state
+    ``session.shutdown`` rollup emits one event PER model used in the
+    session; without it a multi-model session (e.g. a fleet run that
+    switched LLMs) would collapse every model bucket onto a single row.
+    Agency ``events.jsonl`` rollups carry a single model, so including it
+    is harmless there.
     """
     h = hashlib.sha1()
     h.update(b"rollup|")
     h.update((host_app or "").encode("utf-8"))
     h.update(b"|")
     h.update(sid.encode("utf-8"))
+    h.update(b"|")
+    h.update((model or "").encode("utf-8"))
     return h.hexdigest()
 
 
@@ -306,7 +315,8 @@ CREATE TABLE IF NOT EXISTS events (
     cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
     cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     host_app           TEXT,
-    model              TEXT
+    model              TEXT,
+    is_rollup          INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts_utc);
 CREATE TABLE IF NOT EXISTS meta (
@@ -455,6 +465,27 @@ class HistoryStore:
             self._collapse_agency_rollups()
             current = "3"
             self._set_meta("schema_version", "3")
+        if current == "3":
+            # v3 -> v4: add the is_rollup column and flag rows that are
+            # already stored under a rollup id (Agency events.jsonl rollups
+            # and the survivors the v2->v3 collapse re-keyed) so they keep
+            # updating in place. Session-state rollups were stored with
+            # content-addressed ids and stay is_rollup = 0 for now; rollup
+            # ingestion is authoritative (see :meth:`ingest`), so the first
+            # post-upgrade refresh purges each session's stale rows when its
+            # rollup lands. No up-front row deletion - that would make a
+            # currently-active resumed session vanish until it next completes.
+            try:
+                self._conn.execute(
+                    "ALTER TABLE events ADD COLUMN "
+                    "is_rollup INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                # Column already exists from a partial prior run.
+                pass
+            self._flag_existing_rollup_rows()
+            current = "4"
+            self._set_meta("schema_version", "4")
 
     def _collapse_agency_rollups(self) -> None:
         """Deduplicate persisted Agency rollups, one row per session.
@@ -495,6 +526,28 @@ class HistoryStore:
                     "UPDATE events SET event_id = ? WHERE event_id = ?",
                     (stable, survivor_eid),
                 )
+
+    def _flag_existing_rollup_rows(self) -> None:
+        """Set ``is_rollup = 1`` on rows already keyed by a rollup id.
+
+        Run during the v3 -> v4 migration. A row whose ``event_id`` equals
+        :func:`_rollup_event_id` of its own ``(session, host, model)`` was
+        ingested as a rollup (the Agency ``events.jsonl`` rollups and the
+        survivors the v2 -> v3 collapse re-keyed). Flagging them keeps a
+        later ingest of the same session idempotent instead of purging and
+        re-inserting the row on the first post-upgrade refresh. Per-turn /
+        content-addressed rows do not match and stay ``is_rollup = 0``.
+        """
+        flag: list[str] = []
+        for eid, sid, host_app, model in self._conn.execute(
+            "SELECT event_id, session_id, host_app, model FROM events"
+        ).fetchall():
+            if eid == _rollup_event_id(sid, host_app, model):
+                flag.append(eid)
+        self._conn.executemany(
+            "UPDATE events SET is_rollup = 1 WHERE event_id = ?",
+            [(e,) for e in flag],
+        )
 
     def _get_meta(self, key: str) -> str | None:
         row = self._conn.execute(
@@ -680,16 +733,27 @@ class HistoryStore:
         ``event_id`` hashes than the canonical single rollup row.
 
         Events flagged ``is_rollup=True`` (per-session cumulative totals
-        such as the Agency ``session.shutdown`` rollup) are keyed by
-        session via :func:`_rollup_event_id` and inserted with ``INSERT
-        OR REPLACE``. Their token counts grow across successive parses
-        while the timestamp stays fixed, so a content-addressed id would
-        store every snapshot as a new row and inflate the totals; keying
-        by session makes the latest snapshot supersede the prior one.
+        such as the Agency / Copilot session-state ``session.shutdown``
+        rollup) are keyed by ``(session, host, model)`` via
+        :func:`_rollup_event_id` and inserted with ``INSERT OR REPLACE``.
+        Their token counts grow across successive parses while the
+        timestamp stays fixed, so a content-addressed id would store every
+        snapshot as a new row and inflate the totals; keying by session
+        makes the latest snapshot supersede the prior one. A rollup is also
+        treated as the authoritative total for its whole session, so ingest
+        first purges any stale NON-rollup rows for that ``session_id`` - the
+        legacy content-addressed snapshots a session-state session left
+        behind before rollup keying existed (possibly under a now-retired
+        host attribution), and per-turn rows from a now-rotated process log
+        for the same session. The per-model rollup rows survive, so a
+        multi-model session keeps one row per model. This is what lets a
+        RESUMED session update in place instead of being frozen at its first
+        persisted snapshot.
         """
         cutoff = self._parse_meta_dt("recording_active_since_utc")
         insert_rows = []
         replace_rows = []
+        rollup_sids: set[str] = set()
         for ev in events:
             if getattr(ev, "is_estimated", False):
                 continue
@@ -703,6 +767,8 @@ class HistoryStore:
             ts_norm = _normalize_ts(ts_raw)
             sid = ev.session_id or ""
             host_app = getattr(ev, "host_app", None)
+            model = getattr(ev, "model", None)
+            is_rollup = bool(getattr(ev, "is_rollup", False))
             row = (
                 ts_norm,
                 sid,
@@ -711,10 +777,13 @@ class HistoryStore:
                 int(ev.cache_read_tokens),
                 int(ev.cache_write_tokens),
                 host_app,
-                getattr(ev, "model", None),
+                model,
+                1 if is_rollup else 0,
             )
-            if getattr(ev, "is_rollup", False):
-                replace_rows.append((_rollup_event_id(sid, host_app), *row))
+            if is_rollup:
+                rollup_id = _rollup_event_id(sid, host_app, model)
+                replace_rows.append((rollup_id, *row))
+                rollup_sids.add(sid)
             else:
                 insert_rows.append((_event_id(ts_norm, sid, ev), *row))
         if not insert_rows and not replace_rows:
@@ -723,9 +792,26 @@ class HistoryStore:
             "INSERT {verb} INTO events("
             "event_id, ts_utc, session_id, "
             "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
-            "host_app, model"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "host_app, model, is_rollup"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
+        # A ``session.shutdown`` rollup carries the authoritative cumulative
+        # totals for the WHOLE session (every model it used), so once a
+        # session contributes any rollup, purge every stale NON-rollup row
+        # for that session_id: the legacy content-addressed snapshots it left
+        # behind before rollup keying existed (possibly under a now-retired
+        # host attribution such as 'Clawpilot'), and per-turn estimates from a
+        # process log that has since rotated. The model-keyed rollup rows
+        # (is_rollup = 1) survive, so multi-model sessions keep one row per
+        # model. This supersedes the stale rows instead of double-counting,
+        # and is what lets a RESUMED session's totals update rather than
+        # freeze at the first snapshot. Done before the row-count baseline so
+        # the "rows added" return value stays >= 0.
+        for sid in rollup_sids:
+            self._conn.execute(
+                "DELETE FROM events WHERE session_id = ? AND is_rollup = 0",
+                (sid,),
+            )
         before = self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         if insert_rows:
             # Per-turn events are immutable; never overwrite an existing row.
@@ -826,11 +912,7 @@ class HistoryStore:
                 _cl.LOG_DIR = log_dir
                 _ae.LOG_ROOT = agency_root
                 _ss.LOG_DIR = session_state_root
-                events = list(
-                    iter_all_events(
-                        extra_skip_session_ids=self.existing_session_ids()
-                    )
-                )
+                events = list(iter_all_events())
             finally:
                 _cl.LOG_DIR = _orig_log_dir
                 _ae.LOG_ROOT = _orig_log_root
