@@ -1,6 +1,7 @@
 ---
 feature: show-claude-code-usage-alongside-copilot
 status: draft
+revised: 2026-07-31 (JJ review round 1); 2026-07-31 (Emily round 1 rework: vault-ledger design replaced with the tools' own generic storage, verified on disk)
 agent: emily
 drafted: 2026-07-28
 source: spec/punchlist.md (Ideas, 2026-07-23), from vault processed/2026-07-23-tokentray-claude-code-update.md; priority confirmed H by JJ 2026-07-28
@@ -10,34 +11,47 @@ priority: H
 
 # Show Claude Code usage alongside Copilot CLI
 
-Drafted by Emily. The capture's insight is that the hard part is already done: the vault's ledger is a ready-made data source, so this is a reader and a pane, not a metering project.
+Reworked by Emily after JJ's round-1 review killed the first design's core assumption. The original draft read the vault fleet's private cost ledger; TokenUsageTray is a general-use app that anyone downloads, so it may assume nothing about JJ's personal setup. This revision reads what the Claude tools themselves write to disk on every machine they run on.
 
 ## Problem
 
-TokenUsageTray shows Copilot CLI usage and nothing else, while the household's heaviest model spend has moved to Claude Code: the vault fleet alone books multiple runs daily into `C:\Code\Vault\metrics\runs.csv` (Medici's ledger: date, job, trigger, provider, model, quantity, unit, cost_usd). The tray answers yesterday's question.
+The tray shows Copilot CLI usage and nothing for Claude, while for many users (JJ included) Claude Code is the heavier tool. The data exists locally on every machine that runs Claude Code; the tray just never looks at it.
+
+## Model (the tools' own storage, verified on this machine 2026-07-31)
+
+- **Claude Code session transcripts** live at `%USERPROFILE%\.claude\projects\<project-slug>\<session-id>.jsonl`, one JSONL file per session, one line per message. Assistant-message lines carry a `usage` object, verified verbatim from a live transcript: `"usage":{"input_tokens":5651,"cache_creation_input_tokens":2755,"cache_read_input_tokens":25133,"output_tokens":519,...}` alongside `"model":"claude-opus-4-8"` and a timestamp. This is the generic, tool-owned source: no JJ pattern, no ledger, present wherever Claude Code has run.
+- The `~/.claude` home also holds `history.jsonl`, `sessions/`, and `tasks/` (directory listing verified); whether any of these carries aggregated usage is **unverified**, and the transcripts alone are sufficient for v1.
+- **Claude Desktop / Cowork**: `%APPDATA%\Claude` exists on this machine; its internal storage format for session or token data is **unverified** (not asserted). Desktop support is scoped as a follow-on spike, not a v1 claim.
+- **Privacy-relevant fact**: transcripts contain full conversation content. The tray must read only the `usage`, `model`, and timestamp fields and must never parse, store, or display message content; this is a hard rule, not an optimization.
 
 ## Charter
 
-Add a Claude Code section to the tray fed from the vault ledger: per-agent counts and spend alongside the existing Copilot view, read-only, refreshed on the tray's existing cadence.
+A Claude Code pane beside the Copilot pane, fed exclusively from the tool's own local storage, working on any machine with a default Claude Code install and degrading to an honest "no Claude Code data found" when the directory is absent. Zero assumptions about who the user is.
 
 ## Behavior
 
-1. Read `metrics/runs.csv` (path configurable, defaulting to the vault; BOM-tolerant, header-checked, missing file shows an honest "no ledger found" rather than an empty pane).
-2. Aggregate the recent window (default: current month) by `job`: run count, quantity with unit where uniform, summed `cost_usd` where present. **Honesty rule from the ledger's own semantics:** subscription-covered runs carry blank cost, so the pane never invents dollars; it shows "N runs, $X metered" with metered clearly scoped, not a fake total.
-3. Render alongside Copilot in the tray's existing visual language; the agent names (emily, hopper, dewey, marcus, and company) are the row labels, which makes the tray a payroll view in miniature.
-4. No writes, ever: the ledger belongs to Medici; the tray is a reader.
+1. **Discovery**: default root `%USERPROFILE%\.claude\projects`, overridable in the tray's existing settings. Absent directory: the pane says so plainly and stays quiet.
+2. **Parsing**: stream each session `.jsonl`, extracting only usage/model/timestamp per assistant message. Files grow large and accumulate; parse incrementally with a per-file offset cache keyed by (path, size, mtime), the same shape the tray's Copilot rollup cache already uses, so a refresh reads only new bytes.
+3. **Aggregation**: tokens by day and by model (input, output, cache-read and cache-creation kept distinct, since cache reads dominate raw counts and would mislead if lumped in), plus per-project rollups from the directory slug. Session counts come free from file counts.
+4. **Display**: alongside the Copilot pane in its visual language, window matched to whatever the Copilot pane uses. Token counts are the truth; **no dollar figures**, because subscription-plan usage has no meaningful per-token price and inventing one would be exactly the dishonesty the first draft's ledger-notes rule existed to avoid. A pricing table for API users can be a later opt-in.
+5. **Isolation**: read-only, content-blind, and resilient: a malformed line or unreadable file skips with a count of skipped entries surfaced in a tooltip, never a crash.
 
 ## Relationships
 
-- **Connects to** `C:\Code\Vault\metrics\runs.csv` and `scripts/record_cost.py` (Medici): the source of truth and its schema doc.
-- **Connects to** the vault Ideas item "One view of overnight agent runs and costs across vault and app fleets": that item wants the cross-fleet ledger view; this tray pane is a first consumer and a proof of shape, not a replacement. Flagged so the two do not diverge into rival dashboards.
+- **Connects to** the tray's existing Copilot ingestion and cache (the incremental-parse pattern to mirror; its session-rollup fix in the punchlist Done section is prior art for the offset cache).
+- **Diminishes, deliberately**: the first draft's dependence on `C:\Code\Vault\metrics\runs.csv`. JJ's own machine benefits incidentally (his transcripts are as generic as anyone's), and the vault ledger remains the fleet's payroll view, unrelated to this app.
 - **Contradicts** nothing found in this repo.
 
 ## Acceptance
 
-- The tray shows Claude Code usage per agent for the current window next to Copilot, with metered cost scoped honestly and blank-cost runs counted but never priced; a missing or malformed ledger degrades to a clear message, never a crash.
+- On a machine with Claude Code and no JJ infrastructure whatsoever, the pane shows per-day, per-model token usage from the transcripts alone; on a machine without Claude Code, it says so and shows nothing invented.
+- Message content is never read beyond field extraction, never stored, never displayed; code review can verify the parser touches only the three field groups.
+- Large transcript directories refresh incrementally; a full cold scan is bounded and reported the first time only.
+- No dollar amounts appear anywhere in v1.
 
 ## Open questions
 
-- Window: current month, rolling 30 days, or match whatever the Copilot pane uses? Emily proposes matching the Copilot pane for visual coherence.
-- Should the pane deep-link to the vault's weekly activity report for the full payroll? Cheap if the tray supports links; cosmetic otherwise.
+- **JJ, 2026-07-31:** This is wrong - it should not read anything associated with my personal implementation, it should read a generic token counter from the place that Claude, Claude Code, and CLaud Cowork store them.  This is an app that is general use and many people download and use it, so we can't assume any of the JJ Patterns are in place - we need to read usage from how the tools themselves track usage, sessions, tokens, etc
+  - *Emily, 2026-07-31: reworked as directed; the design above reads only `%USERPROFILE%\.claude` transcript storage, verified generic, with the vault ledger fully removed. One piece I could not verify from here: where Claude Desktop/Cowork stores its usage (its `%APPDATA%\Claude` folder exists but I did not assert its format). Scoped as a follow-on spike below rather than guessed at.*
+- Desktop/Cowork spike: identify whether `%APPDATA%\Claude` (or another location) exposes parseable session or token data; until then the pane is Claude Code only, labeled as such.
+- Window: matched to the Copilot pane (carried over from round 1, still Emily's proposal).
