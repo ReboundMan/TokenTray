@@ -1,4 +1,5 @@
 ---
+spec: 10017
 feature: show-claude-code-usage-alongside-copilot
 status: draft
 revised: 2026-07-31 (JJ review round 1); 2026-07-31 (Emily round 1 rework: vault-ledger design replaced with the tools' own generic storage, verified on disk)
