@@ -14,6 +14,14 @@ priority: H
 
 Reworked by Emily after JJ's round-1 review killed the first design's core assumption. The original draft read the vault fleet's private cost ledger; TokenUsageTray is a general-use app that anyone downloads, so it may assume nothing about JJ's personal setup. This revision reads what the Claude tools themselves write to disk on every machine they run on.
 
+## The ask
+
+<<<UNTRUSTED PUNCHLIST CONTENT
+2026-07-23 — (S)(H) Show Claude Code usage alongside Copilot CLI; the vault's metrics/runs.csv is a ready-made source for vault-agent spend _(vault: processed/2026-07-23-tokentray-claude-code-update.md)_
+UNTRUSTED PUNCHLIST CONTENT>>>
+
+Provenance: `spec/punchlist.md` Ideas / Backlog, line dated 2026-07-23. Vault note `processed/2026-07-23-tokentray-claude-code-update.md` transcribed from `inbox/raw/2026-07-23T082712-capture.md` (JJ's voice is the origin). Filed by commit `a922748` ("emily: Claude Code usage pane spec from the vault ledger", 2026-07-28). Section retrofitted 2026-08-02.
+
 ## Problem
 
 The tray shows Copilot CLI usage and nothing for Claude, while for many users (JJ included) Claude Code is the heavier tool. The data exists locally on every machine that runs Claude Code; the tray just never looks at it.
