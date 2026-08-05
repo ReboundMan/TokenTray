@@ -13,7 +13,7 @@
 
 ## 💡 Ideas / Backlog
 
-- [ ] 2026-07-23 — (S)(H) Show Claude Code usage alongside Copilot CLI; the vault's metrics/runs.csv is a ready-made source for vault-agent spend _(vault: processed/2026-07-23-tokentray-claude-code-update.md)_. Spec drafted 2026-07-28 (features/show-claude-code-usage-alongside-copilot.md, status: draft, awaiting review).
+- [x] 2026-07-23 — (S)(H) Show Claude Code usage alongside Copilot CLI; the vault's metrics/runs.csv is a ready-made source for vault-agent spend _(vault: processed/2026-07-23-tokentray-claude-code-update.md)_. Spec drafted 2026-07-28 (features/show-claude-code-usage-alongside-copilot.md, status: built). shipped 2026-08-05 (PR #1 merged)
 <!-- new feature ideas land here by default -->
 
 ## 🐛 Bugs
