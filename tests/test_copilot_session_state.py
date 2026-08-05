@@ -193,9 +193,11 @@ def test_iter_all_events_dedups_shared_session_id(tmp_path, monkeypatch):
 
     from tokentray.parsers import copilot_logs as cl, agency_events as ae
     from tokentray.parsers import copilot_session_state as ss
+    from tokentray.parsers import claude_code as cc
     monkeypatch.setattr(cl, "LOG_DIR", copilot_dir)
     monkeypatch.setattr(ae, "LOG_ROOT", tmp_path / "no-agency")
     monkeypatch.setattr(ss, "LOG_DIR", sstate)
+    monkeypatch.setattr(cc, "PROJECTS_DIR", tmp_path / "no-claude")
 
     events = list(iter_all_events())
     by_sid: dict[str, list] = {}
@@ -220,9 +222,11 @@ def test_iter_all_events_extra_skip_applies_to_session_state(tmp_path, monkeypat
 
     from tokentray.parsers import copilot_logs as cl, agency_events as ae
     from tokentray.parsers import copilot_session_state as ss
+    from tokentray.parsers import claude_code as cc
     monkeypatch.setattr(cl, "LOG_DIR", tmp_path / "no-logs")
     monkeypatch.setattr(ae, "LOG_ROOT", tmp_path / "no-agency")
     monkeypatch.setattr(ss, "LOG_DIR", sstate)
+    monkeypatch.setattr(cc, "PROJECTS_DIR", tmp_path / "no-claude")
 
     events = list(
         iter_all_events(extra_skip_session_ids={"already-counted"})

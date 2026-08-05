@@ -12,7 +12,11 @@ from history_store import HistoryStore, SupporterRequiredError
 from icon_renderer import make_badge_icon
 from popup_window import DEFAULT_WINDOW, PopupWindow
 from usage_core import bucket_by_day, fmt_tokens
-from tokentray.parsers import iter_all_events, is_session_state_event
+from tokentray.parsers import (
+    iter_all_events,
+    is_session_state_event,
+)
+from tokentray.tool_split import tool_split_line, tool_split_tooltip
 
 REFRESH_MS = 120_000  # 120 seconds (matches user preference)
 
@@ -44,6 +48,7 @@ class TrayApp:
         self._log_cache: dict = {}
         self._agency_cache: dict = {}
         self._session_state_cache: dict = {}
+        self._claude_cache: dict = {}  # Claude Code transcripts (spec 10017)
 
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(make_badge_icon("…"))
@@ -290,6 +295,12 @@ class TrayApp:
         self.popup.show_near(QCursor.pos())
 
     # ------------------------------------------------------------------
+    def _tool_split_line(self, events) -> str:
+        return tool_split_line(events)
+
+    def _tool_split_tooltip(self, events) -> str:
+        return tool_split_tooltip(self._claude_cache, events)
+
     def refresh(self) -> None:
         try:
             events = list(
@@ -297,6 +308,7 @@ class TrayApp:
                     cache=self._log_cache,
                     agency_cache=self._agency_cache,
                     session_state_cache=self._session_state_cache,
+                    claude_cache=self._claude_cache,
                 )
             )
             # Stats grid always reflects "today"; chart shows the fixed window.
@@ -349,6 +361,8 @@ class TrayApp:
                 chart_buckets,
                 history=history_snapshot,
                 tier=tier_snapshot,
+                tool_line=self._tool_split_line(events),
+                tool_tooltip=self._tool_split_tooltip(events),
             )
         except Exception:
             # Never let a transient log-parse or rendering error kill the tray.

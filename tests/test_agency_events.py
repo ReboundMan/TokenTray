@@ -250,10 +250,13 @@ def test_iter_all_events_chains_copilot_and_agency(tmp_path, monkeypatch):
 
     from tokentray.parsers import copilot_logs as cl, agency_events as ae
     from tokentray.parsers import copilot_session_state as ss
+    from tokentray.parsers import claude_code as cc
     monkeypatch.setattr(cl, "LOG_DIR", copilot_dir)
     monkeypatch.setattr(ae, "LOG_ROOT", agency_root)
     # Isolate from the real ~/.copilot/session-state on the test machine.
     monkeypatch.setattr(ss, "LOG_DIR", tmp_path / "no-session-state")
+    # And from the real ~/.claude/projects (spec 10017's new source).
+    monkeypatch.setattr(cc, "PROJECTS_DIR", tmp_path / "no-claude")
 
     events = list(iter_all_events())
     by_host = {}

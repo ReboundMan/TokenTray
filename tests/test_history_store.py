@@ -465,14 +465,17 @@ def test_ingest_logs_skips_unchanged_dir(tmp_path, monkeypatch):
     )
     empty_agency = tmp_path / "no-agency"
     empty_sstate = tmp_path / "no-session-state"
+    empty_claude = tmp_path / "no-claude"
     added = store.ingest_logs(
-        log_dir, agency_root=empty_agency, session_state_root=empty_sstate
+        log_dir, agency_root=empty_agency, session_state_root=empty_sstate,
+        claude_root=empty_claude,
     )
     assert added == 1
 
     # No file change -> no work.
     added2 = store.ingest_logs(
-        log_dir, agency_root=empty_agency, session_state_root=empty_sstate
+        log_dir, agency_root=empty_agency, session_state_root=empty_sstate,
+        claude_root=empty_claude,
     )
     assert added2 == 0
     store.close()
