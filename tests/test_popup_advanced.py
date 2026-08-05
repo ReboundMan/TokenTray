@@ -198,7 +198,9 @@ def test_unknown_label_sinks_to_bottom(popup, store):
     s = store
     conn = s._conn  # private but stable for this test
     conn.execute(
-        "INSERT INTO events VALUES('legacy', ?, 'sess-legacy', 5000, 1000, 0, 0, NULL, NULL)",
+        "INSERT INTO events(event_id, ts_utc, session_id, input_tokens, "
+        "output_tokens, cache_read_tokens, cache_write_tokens, host_app, model) "
+        "VALUES('legacy', ?, 'sess-legacy', 5000, 1000, 0, 0, NULL, NULL)",
         (datetime(2026, 5, 24, 15, 0, tzinfo=timezone.utc).isoformat(),),
     )
     conn.commit()

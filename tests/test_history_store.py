@@ -270,6 +270,159 @@ def test_migration_collapses_duplicate_agency_rollups(tmp_path):
     store.close()
 
 
+def _ss_rollup(ts, sid, model, *, host="Agency", i=0, o=0, cr=0, cw=0):
+    """A session-state-style per-model rollup event."""
+    return UsageEvent(
+        timestamp=ts,
+        session_id=sid,
+        input_tokens=i,
+        output_tokens=o,
+        cache_read_tokens=cr,
+        cache_write_tokens=cw,
+        host_app=host,
+        model=model,
+        is_rollup=True,
+    )
+
+
+def test_multi_model_rollup_keeps_one_row_per_model(tmp_path):
+    """A session that switched LLMs keeps one rollup row per model.
+
+    Regression: keying a rollup by (session, host) only collapsed every
+    model of a multi-model fleet run onto a single row, so the Advanced
+    "By model" table showed just the last model.
+    """
+    store = HistoryStore.open(
+        tmp_path / "h.db", now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    ts = datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc)
+    assert store.ingest([
+        _ss_rollup(ts, "fleet", "claude-opus-4.8", i=100, cr=50),
+        _ss_rollup(ts, "fleet", "gpt-5.5", i=10, cr=5),
+        _ss_rollup(ts, "fleet", "claude-sonnet-4.6", i=1, cr=1),
+    ]) == 3
+    by_model = store.totals_by_model()
+    assert set(by_model) == {"claude-opus-4.8", "gpt-5.5", "claude-sonnet-4.6"}
+    store.close()
+
+
+def test_resumed_session_rollup_updates_in_place(tmp_path):
+    """Resuming a session grows its rollup; the row REPLACES, not stacks.
+
+    The live bug: a resumed session's larger session.shutdown rollup was
+    skipped because its id was already in the DB, freezing History at the
+    first snapshot while Today (live parse) kept climbing.
+    """
+    store = HistoryStore.open(
+        tmp_path / "h.db", now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    ts1 = datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc)
+    assert store.ingest([_ss_rollup(ts1, "resumed", "claude-opus-4.8", i=100, cr=50)]) == 1
+    # Resume completes later with a fresh shutdown ts and larger totals.
+    ts2 = datetime(2026, 1, 6, 9, 0, tzinfo=timezone.utc)
+    assert store.ingest([_ss_rollup(ts2, "resumed", "claude-opus-4.8", i=300, cr=150)]) == 0
+    totals = store.summarize_all_time()
+    assert totals.events == 1
+    assert totals.input_tokens == 300
+    assert totals.cache_read_tokens == 150
+    store.close()
+
+
+def test_session_state_rollup_supersedes_legacy_rows(tmp_path):
+    """A rollup is authoritative: it purges stale non-rollup rows for its key.
+
+    Models the upgrade transition - a session-state session first persisted
+    as content-addressed (non-rollup) rows, then re-ingested as a rollup. The
+    legacy rows must be superseded, not double-counted.
+    """
+    store = HistoryStore.open(
+        tmp_path / "h.db", now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    ts = datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc)
+    # Legacy content-addressed snapshot for (sess, Copilot CLI, opus).
+    legacy = UsageEvent(
+        timestamp=ts,
+        session_id="sess",
+        input_tokens=100,
+        output_tokens=0,
+        cache_read_tokens=50,
+        cache_write_tokens=0,
+        host_app="Copilot CLI",
+        model="claude-opus-4.8",
+    )
+    assert store.ingest([legacy]) == 1
+    # The session is re-ingested as a rollup with larger totals.
+    roll = _ss_rollup(ts, "sess", "claude-opus-4.8", host="Copilot CLI", i=300, cr=150)
+    store.ingest([roll])
+    totals = store.summarize_all_time()
+    assert totals.events == 1  # legacy row purged, not doubled
+    assert totals.input_tokens == 300
+    assert totals.cache_read_tokens == 150
+    store.close()
+
+
+def test_rollup_supersedes_legacy_rows_under_any_host(tmp_path):
+    """A session's rollup purges ALL its non-rollup rows, even legacy hosts.
+
+    Resumed sessions accumulated stale per-turn / content-addressed rows,
+    sometimes under a now-retired host attribution (e.g. 'Clawpilot'). The
+    session.shutdown rollup is the authoritative session total, so every
+    non-rollup row for that session_id must be superseded - otherwise the
+    History totals run ahead of the live Today parse.
+    """
+    store = HistoryStore.open(
+        tmp_path / "h.db", now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    ts = datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc)
+    legacy_clawpilot = UsageEvent(
+        timestamp=ts, session_id="sess", input_tokens=40, output_tokens=0,
+        cache_read_tokens=0, cache_write_tokens=0,
+        host_app="Clawpilot", model="claude-opus-4.8",
+    )
+    legacy_other_model = UsageEvent(
+        timestamp=ts, session_id="sess", input_tokens=7, output_tokens=0,
+        cache_read_tokens=0, cache_write_tokens=0,
+        host_app="Copilot CLI", model="gpt-5.5",
+    )
+    assert store.ingest([legacy_clawpilot, legacy_other_model]) == 2
+    # The session re-ingests its authoritative rollup (one row per model).
+    store.ingest([
+        _ss_rollup(ts, "sess", "claude-opus-4.8", host="Copilot CLI", i=300, cr=150),
+        _ss_rollup(ts, "sess", "gpt-5.5", host="Copilot CLI", i=10),
+    ])
+    totals = store.summarize_all_time()
+    assert totals.events == 2  # two rollup rows only; legacy rows purged
+    assert totals.input_tokens == 310  # 300 + 10, not + 40 + 7
+    store.close()
+
+
+def test_purge_is_session_scoped(tmp_path):
+    """A rollup must not touch a DIFFERENT session's non-rollup rows."""
+    store = HistoryStore.open(
+        tmp_path / "h.db", now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    ts = datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc)
+    store.ingest([_ev(ts, "other-sess", i=5)])  # unrelated per-turn rows
+    store.ingest([_ss_rollup(ts, "rollup-sess", "claude-opus-4.8", i=300)])
+    totals = store.summarize_all_time()
+    assert totals.events == 2
+    assert totals.input_tokens == 305  # both preserved
+    store.close()
+
+
+def test_migration_v3_to_v4_adds_is_rollup_column(tmp_path):
+    """Reopening a v3 DB advances to v4 and exposes the is_rollup column."""
+    db = tmp_path / "h.db"
+    store = HistoryStore.open(db, now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    store._set_meta("schema_version", "3")
+    store.close()
+    store = HistoryStore.open(db)
+    assert store._get_meta("schema_version") == SCHEMA_VERSION
+    cols = {r[1] for r in store._conn.execute("PRAGMA table_info(events)")}
+    assert "is_rollup" in cols
+    store.close()
+
+
 def test_ingest_handles_naive_timestamps(tmp_path):
     """UsageEvent may carry naive datetimes (mtime fallback); store normalizes."""
     store = HistoryStore.open(
