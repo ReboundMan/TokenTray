@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-05
+
+### Added
+- Claude Code usage pane: TokenTray now reads `~/.claude` transcripts and shows
+  Claude Code token usage alongside Copilot, with a per-tool Today split, a
+  per-model tooltip breakdown, and an offset-resume transcript cache so large
+  transcript files are not re-parsed on every refresh.
+
 ## [0.6.1] - 2026-06-12
 
 ### Fixed
