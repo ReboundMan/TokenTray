@@ -12,7 +12,12 @@ from history_store import HistoryStore, SupporterRequiredError
 from icon_renderer import make_badge_icon
 from popup_window import DEFAULT_WINDOW, PopupWindow
 from usage_core import bucket_by_day, fmt_tokens
-from tokentray.parsers import iter_all_events, is_session_state_event
+from tokentray.parsers import (
+    CLAUDE_PROJECTS_DIR,
+    iter_all_events,
+    is_session_state_event,
+)
+from tokentray.parsers.claude_code import skipped_line_count
 
 REFRESH_MS = 120_000  # 120 seconds (matches user preference)
 
@@ -44,6 +49,7 @@ class TrayApp:
         self._log_cache: dict = {}
         self._agency_cache: dict = {}
         self._session_state_cache: dict = {}
+        self._claude_cache: dict = {}  # Claude Code transcripts (spec 10017)
 
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(make_badge_icon("…"))
@@ -290,6 +296,36 @@ class TrayApp:
         self.popup.show_near(QCursor.pos())
 
     # ------------------------------------------------------------------
+    def _tool_split_line(self, events) -> str:
+        """Today's totals split by tool (spec 10017), matching
+        bucket_by_day's local-calendar "today" semantics. Claude Code gets
+        an explicit no-data state when its storage directory is absent,
+        never a silent zero."""
+        today_local = datetime.now().astimezone().date()
+        totals: dict[str, int] = {}
+        for ev in events:
+            if ev.timestamp.astimezone().date() != today_local:
+                continue
+            host = ev.host_app or "Copilot CLI"
+            totals[host] = totals.get(host, 0) + ev.total
+        parts = [
+            f"{host} {fmt_tokens(n)}"
+            for host, n in sorted(totals.items(), key=lambda kv: -kv[1])
+        ]
+        if "Claude Code" not in totals:
+            if CLAUDE_PROJECTS_DIR.exists():
+                parts.append("Claude Code 0")
+            else:
+                parts.append("Claude Code: no data found")
+        return "Today by tool:  " + "  ·  ".join(parts) if parts else ""
+
+    def _tool_split_tooltip(self) -> str:
+        skipped = skipped_line_count(self._claude_cache)
+        base = f"Claude Code source: {CLAUDE_PROJECTS_DIR}"
+        if skipped:
+            base += f"\n{skipped} malformed transcript line(s) skipped"
+        return base
+
     def refresh(self) -> None:
         try:
             events = list(
@@ -297,6 +333,7 @@ class TrayApp:
                     cache=self._log_cache,
                     agency_cache=self._agency_cache,
                     session_state_cache=self._session_state_cache,
+                    claude_cache=self._claude_cache,
                 )
             )
             # Stats grid always reflects "today"; chart shows the fixed window.
@@ -349,6 +386,8 @@ class TrayApp:
                 chart_buckets,
                 history=history_snapshot,
                 tier=tier_snapshot,
+                tool_line=self._tool_split_line(events),
+                tool_tooltip=self._tool_split_tooltip(),
             )
         except Exception:
             # Never let a transient log-parse or rendering error kill the tray.

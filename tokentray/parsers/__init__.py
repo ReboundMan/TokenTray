@@ -35,6 +35,11 @@ from tokentray.parsers.copilot_session_state import (
     is_session_state_event,
     iter_copilot_session_state_events,
 )
+from tokentray.parsers.claude_code import (
+    PROJECTS_DIR as CLAUDE_PROJECTS_DIR,
+    ClaudeCache,
+    iter_claude_code_events,
+)
 from tokentray.parsers.model_normalize import normalize_model
 
 
@@ -43,6 +48,7 @@ def iter_all_events(
     cache: LogCache | None = None,
     agency_cache: AgencyCache | None = None,
     session_state_cache: SessionStateCache | None = None,
+    claude_cache: ClaudeCache | None = None,
     extra_skip_session_ids: set[str] | None = None,
 ) -> Iterable[UsageEvent]:
     """Yield every :class:`UsageEvent` from every known source.
@@ -59,6 +65,9 @@ def iter_all_events(
       :func:`tokentray.parsers.copilot_session_state.iter_copilot_session_state_events`
       (Copilot CLI 1.0.54+, which no longer writes process-log
       telemetry)
+    * ``~/.claude/projects/<slug>/<session>.jsonl`` via
+      :func:`tokentray.parsers.claude_code.iter_claude_code_events`
+      (Claude Code session transcripts; spec 10017)
 
     The session-state store shares its ``session_id`` with the
     process-log telemetry, so the SAME session can be described by more
@@ -95,19 +104,27 @@ def iter_all_events(
         cache=session_state_cache, skip_session_ids=skip
     )
 
+    # Claude Code transcripts (spec 10017): a disjoint storage root
+    # (~/.claude/projects) with UUID session ids no Copilot source shares,
+    # so it chains without the de-duplication gate the Copilot sources need.
+    yield from iter_claude_code_events(cache=claude_cache)
+
 
 __all__ = [
     "UsageEvent",
     "LogCache",
     "AgencyCache",
     "SessionStateCache",
+    "ClaudeCache",
     "LOG_DIR",
     "AGENCY_LOG_ROOT",
     "SESSION_STATE_DIR",
+    "CLAUDE_PROJECTS_DIR",
     "iter_all_events",
     "iter_usage_events",
     "iter_agency_events",
     "iter_copilot_session_state_events",
+    "iter_claude_code_events",
     "is_session_state_event",
     "normalize_model",
 ]

@@ -103,9 +103,11 @@ class PopupWindow(QWidget):
         v.setContentsMargins(14, 12, 14, 12)
         v.setSpacing(10)
 
-        # Header
+        # Header. "Token usage" since spec 10017: the tray reads Claude
+        # Code transcripts alongside the Copilot sources, so the window is
+        # no longer Copilot-only.
         header = QHBoxLayout()
-        title = QLabel("Copilot CLI token usage")
+        title = QLabel("Token usage")
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         header.addWidget(title)
         header.addStretch(1)
@@ -185,6 +187,16 @@ class PopupWindow(QWidget):
         grid.addWidget(self._stat_sessions, 1, 1)
         grid.addWidget(self._stat_events, 1, 2)
         v.addLayout(grid)
+
+        # Per-tool split (spec 10017): today's totals by tool, so Claude
+        # Code shows alongside Copilot rather than blending invisibly into
+        # the grid above. Also carries the honest "no Claude Code data
+        # found" state when ~/.claude/projects is absent, and the skipped
+        # malformed-line count in its tooltip.
+        self._tool_split_lbl = QLabel("")
+        self._tool_split_lbl.setStyleSheet("color:#475569; font-size:11px;")
+        self._tool_split_lbl.setWordWrap(True)
+        v.addWidget(self._tool_split_lbl)
 
         # Chart -- aggressively style away QtCharts' default dark frame /
         # background and reserve a left margin so the Y-axis labels never
@@ -540,12 +552,17 @@ class PopupWindow(QWidget):
         *,
         history: dict[str, Totals] | None = None,
         tier: TierStatus | None = None,
+        tool_line: str | None = None,
+        tool_tooltip: str | None = None,
     ) -> None:
         """Refresh the stats grid (always today) and the chart (selected window).
 
         ``history`` is the dict returned by ``HistoryStore.all_summaries()``;
         ``tier`` is the snapshot from ``HistoryStore.tier_status()``. Both are
         optional so the popup degrades gracefully if the store isn't ready.
+        ``tool_line`` is the preformatted per-tool split (spec 10017),
+        prepared by the tray where the raw events live; ``tool_tooltip``
+        carries the skipped-line diagnostics.
         """
         self._stat_total.set_value(fmt_tokens(today.total))
         self._stat_in.set_value(fmt_tokens(today.input_tokens))
@@ -553,6 +570,8 @@ class PopupWindow(QWidget):
         self._stat_cache.set_value(fmt_tokens(today.cache_read_tokens))
         self._stat_sessions.set_value(str(len(today.sessions)))
         self._stat_events.set_value(str(today.events))
+        self._tool_split_lbl.setText(tool_line or "")
+        self._tool_split_lbl.setToolTip(tool_tooltip or "")
         self._updated_lbl.setText("Updated " + datetime.now().strftime("%H:%M:%S"))
         self._render_chart(chart_buckets)
         self._update_history(history, tier)

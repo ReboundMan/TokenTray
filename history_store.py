@@ -743,6 +743,7 @@ class HistoryStore:
         *,
         agency_root: Path | None = None,
         session_state_root: Path | None = None,
+        claude_root: Path | None = None,
     ) -> int:
         """Scan known log roots and ingest any new events.
 
@@ -770,9 +771,12 @@ class HistoryStore:
         """
         from usage_core import LOG_DIR  # local import avoids reload cycles in tests
 
+        from tokentray.parsers import CLAUDE_PROJECTS_DIR
+
         log_dir = log_dir or LOG_DIR
         agency_root = agency_root or AGENCY_LOG_ROOT
         session_state_root = session_state_root or SESSION_STATE_DIR
+        claude_root = claude_root or CLAUDE_PROJECTS_DIR
 
         current: dict[str, str] = {}
         if log_dir.exists():
@@ -804,6 +808,15 @@ class HistoryStore:
                 except OSError:
                     continue
                 current[f"sstate:{sess_dir.name}"] = f"{st.st_size}:{st.st_mtime_ns}"
+        if claude_root.exists():
+            # Claude Code transcripts (spec 10017): one JSONL per session.
+            for jsonl_path in sorted(claude_root.glob("*/*.jsonl")):
+                try:
+                    st = jsonl_path.stat()
+                except OSError:
+                    continue
+                rel = jsonl_path.relative_to(claude_root)
+                current[f"claude:{rel}"] = f"{st.st_size}:{st.st_mtime_ns}"
 
         if not current:
             return 0
@@ -819,13 +832,16 @@ class HistoryStore:
             from tokentray.parsers import copilot_logs as _cl
             from tokentray.parsers import agency_events as _ae
             from tokentray.parsers import copilot_session_state as _ss
+            from tokentray.parsers import claude_code as _cc
             _orig_log_dir = _cl.LOG_DIR
             _orig_log_root = _ae.LOG_ROOT
             _orig_ss_dir = _ss.LOG_DIR
+            _orig_claude_dir = _cc.PROJECTS_DIR
             try:
                 _cl.LOG_DIR = log_dir
                 _ae.LOG_ROOT = agency_root
                 _ss.LOG_DIR = session_state_root
+                _cc.PROJECTS_DIR = claude_root
                 events = list(
                     iter_all_events(
                         extra_skip_session_ids=self.existing_session_ids()
@@ -835,6 +851,7 @@ class HistoryStore:
                 _cl.LOG_DIR = _orig_log_dir
                 _ae.LOG_ROOT = _orig_log_root
                 _ss.LOG_DIR = _orig_ss_dir
+                _cc.PROJECTS_DIR = _orig_claude_dir
         except Exception:
             return 0
 

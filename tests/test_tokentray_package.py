@@ -199,9 +199,11 @@ def test_iter_all_events_default_path_does_not_raise_when_dir_missing(monkeypatc
     from tokentray.parsers import copilot_logs as cl
     from tokentray.parsers import agency_events as ae
     from tokentray.parsers import copilot_session_state as ss
+    from tokentray.parsers import claude_code as cc
     monkeypatch.setattr(cl, "LOG_DIR", nowhere_cli)
     monkeypatch.setattr(ae, "LOG_ROOT", nowhere_agency)
     monkeypatch.setattr(ss, "LOG_DIR", nowhere_sstate)
+    monkeypatch.setattr(cc, "PROJECTS_DIR", tmp_path / "does-not-exist-claude")
     events = list(iter_all_events())
     assert events == []
 
