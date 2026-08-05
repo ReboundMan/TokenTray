@@ -16,3 +16,7 @@ dist/
 # Keeping assets/tokentray.ico checked in so the GH Actions build doesn't
 # need to regenerate it; uncomment the next line if you'd rather not.
 # assets/tokentray.ico
+
+# Fleet review findings stay out of git (house Standard 21 / vault spec 10060):
+# panel reviews live on disk for the PR gate, then archive to the vault.
+reviews/

@@ -163,6 +163,115 @@ def test_deleted_file_evicted_from_cache(projects: Path):
     assert not cache
 
 
+def test_subagent_transcripts_are_parsed(projects: Path):
+    """Round-2 Rookie High: subagent transcripts live one level deeper
+    (<slug>/<session-id>/subagents/agent-*.jsonl) and were missed by the
+    original single glob. On the machine that caught it that was 250 of
+    283 files."""
+    _write(projects / "p" / "main-sess.jsonl",
+           _assistant_line("main-sess", "2026-08-04T10:00:00.000Z", it=1))
+    _write(projects / "p" / "main-sess" / "subagents" / "agent-abc123.jsonl",
+           _assistant_line("sub-sess", "2026-08-04T10:05:00.000Z", it=2))
+    events = list(iter_claude_code_events(projects))
+    assert sorted(e.input_tokens for e in events) == [1, 2]
+    assert {e.session_id for e in events} == {"main-sess", "sub-sess"}
+
+
+def test_torn_final_line_deferred_until_complete(projects: Path):
+    """Round-2 Hawk H-1: a live writer can leave a torn final line. The
+    parser must not consume it (no half-line skip count, no lost data);
+    it parses whole once the newline lands."""
+    f = projects / "p" / "s.jsonl"
+    full = _assistant_line("s", "2026-08-04T10:00:00.000Z", it=1)
+    torn = _assistant_line("s", "2026-08-04T10:01:00.000Z", it=2)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(full + "\n" + torn[: len(torn) // 2], encoding="utf-8", newline="\n")
+    cache: dict = {}
+    events = list(iter_claude_code_events(projects, cache=cache))
+    assert [e.input_tokens for e in events] == [1]
+    assert skipped_line_count(cache) == 0  # torn tail is deferred, not "malformed"
+
+    # Writer finishes the line; the resume picks it up whole.
+    with open(f, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write(torn[len(torn) // 2:] + "\n")
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    events = list(iter_claude_code_events(projects, cache=cache))
+    assert [e.input_tokens for e in events] == [1, 2]
+    assert skipped_line_count(cache) == 0
+
+
+def test_nonfinite_token_counts_do_not_crash(projects: Path):
+    """Round-2 Hawk M-1: NaN/Infinity are legal to Python's json loader
+    and must degrade to 0, never crash the refresh."""
+    line = _assistant_line("s", "2026-08-04T10:00:00.000Z")
+    obj = json.loads(line)
+    obj["message"]["usage"]["input_tokens"] = float("nan")
+    obj["message"]["usage"]["output_tokens"] = float("inf")
+    # json.dumps emits the non-standard NaN/Infinity tokens by default,
+    # and json.loads accepts them back: exactly the hole Hawk flagged.
+    _write(projects / "p" / "s.jsonl", json.dumps(obj))
+    events = list(iter_claude_code_events(projects))
+    assert len(events) == 1
+    assert events[0].input_tokens == 0
+    assert events[0].output_tokens == 0
+    assert events[0].cache_read_tokens == 500  # sane fields still counted
+
+
+def test_synthetic_assistant_lines_filtered(projects: Path):
+    """Round-2 Rookie: '<synthetic>' assistant entries are system-
+    generated zero-usage lines; they must not become events (inflating
+    the Events stat) nor count as skipped."""
+    _write(projects / "p" / "s.jsonl",
+           _assistant_line("s", "2026-08-04T10:00:00.000Z",
+                           model="<synthetic>", it=0, ot=0, cr=0, cw=0),
+           _assistant_line("s", "2026-08-04T10:01:00.000Z", it=7))
+    cache: dict = {}
+    events = list(iter_claude_code_events(projects, cache=cache))
+    assert [e.input_tokens for e in events] == [7]
+    assert skipped_line_count(cache) == 0
+
+
+def test_dict_valued_metadata_never_stringified(projects: Path):
+    """Round-2 Hawk M-2: a dict smuggled into sessionId/model must not be
+    str()-coerced into persistent metadata fields (content smuggling)."""
+    line = _assistant_line("s", "2026-08-04T10:00:00.000Z")
+    obj = json.loads(line)
+    obj["sessionId"] = {"smuggled": "CONTENT"}
+    obj["message"]["model"] = {"also": "CONTENT"}
+    _write(projects / "p" / "sess-file.jsonl", json.dumps(obj))
+    events = list(iter_claude_code_events(projects))
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.session_id == "sess-file"  # filename-stem fallback
+    assert ev.model is None and ev.raw_model is None
+    for value in vars(ev).values():
+        assert "CONTENT" not in str(value)
+
+
+def test_tool_split_line_and_tooltip_pure_functions(projects: Path):
+    """The popup split line/tooltip are PyQt-free and testable
+    (round-2 Rookie). Uses the parser's own events as input."""
+    from tokentray.tool_split import tool_split_line, tool_split_tooltip
+    from datetime import datetime as _dt
+    _write(projects / "p" / "s.jsonl",
+           _assistant_line("s", "2026-08-04T10:00:00.000Z", it=1000, ot=0, cr=0, cw=0))
+    cache: dict = {}
+    events = list(iter_claude_code_events(projects, cache=cache))
+    fake_now = _dt.fromisoformat("2026-08-04T12:00:00+00:00")
+
+    line = tool_split_line(events, claude_dir_exists=True, now=fake_now)
+    assert line.startswith("Today by tool:")
+    assert "Claude Code" in line and "no data found" not in line
+
+    empty_line = tool_split_line([], claude_dir_exists=False, now=fake_now)
+    assert "Claude Code: no data found" in empty_line
+
+    tip = tool_split_tooltip(cache, events, now=fake_now)
+    assert "1 transcript file(s) tracked" in tip
+    assert "Today by model:" in tip
+
+
 def test_chains_into_iter_all_events(projects: Path, tmp_path: Path, monkeypatch):
     _write(projects / "p" / "s.jsonl",
            _assistant_line("s", "2026-08-04T10:00:00.000Z"))

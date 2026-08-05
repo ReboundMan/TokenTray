@@ -13,11 +13,10 @@ from icon_renderer import make_badge_icon
 from popup_window import DEFAULT_WINDOW, PopupWindow
 from usage_core import bucket_by_day, fmt_tokens
 from tokentray.parsers import (
-    CLAUDE_PROJECTS_DIR,
     iter_all_events,
     is_session_state_event,
 )
-from tokentray.parsers.claude_code import skipped_line_count
+from tokentray.tool_split import tool_split_line, tool_split_tooltip
 
 REFRESH_MS = 120_000  # 120 seconds (matches user preference)
 
@@ -297,34 +296,10 @@ class TrayApp:
 
     # ------------------------------------------------------------------
     def _tool_split_line(self, events) -> str:
-        """Today's totals split by tool (spec 10017), matching
-        bucket_by_day's local-calendar "today" semantics. Claude Code gets
-        an explicit no-data state when its storage directory is absent,
-        never a silent zero."""
-        today_local = datetime.now().astimezone().date()
-        totals: dict[str, int] = {}
-        for ev in events:
-            if ev.timestamp.astimezone().date() != today_local:
-                continue
-            host = ev.host_app or "Copilot CLI"
-            totals[host] = totals.get(host, 0) + ev.total
-        parts = [
-            f"{host} {fmt_tokens(n)}"
-            for host, n in sorted(totals.items(), key=lambda kv: -kv[1])
-        ]
-        if "Claude Code" not in totals:
-            if CLAUDE_PROJECTS_DIR.exists():
-                parts.append("Claude Code 0")
-            else:
-                parts.append("Claude Code: no data found")
-        return "Today by tool:  " + "  ·  ".join(parts) if parts else ""
+        return tool_split_line(events)
 
-    def _tool_split_tooltip(self) -> str:
-        skipped = skipped_line_count(self._claude_cache)
-        base = f"Claude Code source: {CLAUDE_PROJECTS_DIR}"
-        if skipped:
-            base += f"\n{skipped} malformed transcript line(s) skipped"
-        return base
+    def _tool_split_tooltip(self, events) -> str:
+        return tool_split_tooltip(self._claude_cache, events)
 
     def refresh(self) -> None:
         try:
@@ -387,7 +362,7 @@ class TrayApp:
                 history=history_snapshot,
                 tier=tier_snapshot,
                 tool_line=self._tool_split_line(events),
-                tool_tooltip=self._tool_split_tooltip(),
+                tool_tooltip=self._tool_split_tooltip(events),
             )
         except Exception:
             # Never let a transient log-parse or rendering error kill the tray.

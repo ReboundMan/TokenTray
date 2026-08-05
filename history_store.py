@@ -809,8 +809,17 @@ class HistoryStore:
                     continue
                 current[f"sstate:{sess_dir.name}"] = f"{st.st_size}:{st.st_mtime_ns}"
         if claude_root.exists():
-            # Claude Code transcripts (spec 10017): one JSONL per session.
-            for jsonl_path in sorted(claude_root.glob("*/*.jsonl")):
+            # Claude Code transcripts (spec 10017): one JSONL per session,
+            # plus subagent transcripts nested one level deeper. Reuses the
+            # parser's own glob list so this watermark walk can never drift
+            # from what the parser actually reads (round-2 Rookie High: the
+            # original single glob here and in the parser missed every
+            # subagents/ file).
+            from tokentray.parsers.claude_code import _GLOBS as _claude_globs
+            _claude_paths: list[Path] = []
+            for _pattern in _claude_globs:
+                _claude_paths.extend(claude_root.glob(_pattern))
+            for jsonl_path in sorted(set(_claude_paths)):
                 try:
                     st = jsonl_path.stat()
                 except OSError:

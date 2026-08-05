@@ -31,6 +31,7 @@ count rides each yielded batch's cache entry and is exposed via
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,8 +45,17 @@ PROJECTS_DIR = Path(os.path.expanduser("~/.claude/projects"))
 HOST_APP = "Claude Code"
 
 # rel-path str -> (size_bytes, mtime_ns, byte_offset, events, skipped_lines).
-# The caller owns the dict, same contract as copilot_logs.LogCache.
+# The caller owns the dict, same contract shape as copilot_logs.LogCache
+# (which is a 3-tuple; this one carries two extra slots: the resume offset
+# and the malformed-line count). The two caches are never interchangeable.
 ClaudeCache = dict
+
+# Both transcript layouts Claude Code writes (round-2 Rookie High: the
+# original single glob missed subagent transcripts entirely -- 250 of 283
+# files on the machine that caught it):
+#   <project-slug>/<session-id>.jsonl                 (main sessions)
+#   <project-slug>/<session-id>/subagents/agent-*.jsonl  (subagent runs)
+_GLOBS = ("*/*.jsonl", "*/*/subagents/*.jsonl")
 
 
 def _parse_ts(value) -> datetime | None:
@@ -65,7 +75,12 @@ def _parse_lines(raw: bytes, session_id: str, source_path: str) -> tuple[list[Us
 
     Only assistant lines with a usage dict yield events; every other
     well-formed line (user messages, tool results, sidechain chatter) is
-    NOT counted as skipped -- skipped means malformed or surprising."""
+    NOT counted as skipped -- skipped means malformed or surprising.
+    Synthetic assistant entries (model "<synthetic>", system-generated,
+    verified to carry an all-zeros usage dict) are neither events nor
+    skipped: they are known non-usage, filtered so they can't inflate the
+    Events stat or plant a "<synthetic>" row in per-model tables
+    (round-2 Rookie)."""
     events: list[UsageEvent] = []
     skipped = 0
     for line in raw.split(b"\n"):
@@ -84,26 +99,41 @@ def _parse_lines(raw: bytes, session_id: str, source_path: str) -> tuple[list[Us
             continue
         usage = msg.get("usage")
         if not isinstance(usage, dict):
-            # An assistant line without usage (e.g. a synthetic entry) is
-            # surprising but harmless; count it so drift is visible.
+            # An assistant line without usage is surprising; count it so
+            # drift in the transcript format is visible in the tooltip.
             skipped += 1
             continue
         ts = _parse_ts(obj.get("timestamp"))
         if ts is None:
             skipped += 1
             continue
+        # Metadata fields are typed-checked, never str()-coerced: a dict
+        # smuggled into `model` or `sessionId` would otherwise stringify
+        # CONTENT into fields that persist to the history DB and the UI,
+        # outliving the transcript itself (round-2 Hawk M-2).
         raw_model = msg.get("model")
-        if raw_model is not None and not isinstance(raw_model, str):
-            raw_model = str(raw_model)
+        if not isinstance(raw_model, str):
+            raw_model = None
+        if raw_model == "<synthetic>":
+            continue
+        sid = obj.get("sessionId")
+        if not isinstance(sid, str) or not sid:
+            sid = session_id
 
         def _tok(key: str) -> int:
+            # NaN/Infinity are valid to Python's json loader and would
+            # crash int() out of the whole refresh tick (round-2 Hawk M-1).
             v = usage.get(key)
-            return int(v) if isinstance(v, (int, float)) else 0
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return 0
+            if not math.isfinite(v):
+                return 0
+            return int(v)
 
         events.append(
             UsageEvent(
                 timestamp=ts,
-                session_id=str(obj.get("sessionId") or session_id),
+                session_id=sid,
                 input_tokens=_tok("input_tokens"),
                 output_tokens=_tok("output_tokens"),
                 cache_read_tokens=_tok("cache_read_input_tokens"),
@@ -133,7 +163,10 @@ def iter_claude_code_events(
         return
 
     seen: set[str] = set()
-    for jsonl_path in sorted(root.glob("*/*.jsonl")):
+    paths: list[Path] = []
+    for pattern in _GLOBS:
+        paths.extend(root.glob(pattern))
+    for jsonl_path in sorted(set(paths)):
         try:
             st = jsonl_path.stat()
         except OSError:
@@ -148,24 +181,43 @@ def iter_claude_code_events(
             yield from entry[3]
             continue
 
+        # Live-writer discipline (round-2 Hawk H-1): a transcript can be
+        # mid-append while we read it. Two rules make that safe:
+        #   1. Never read past the size we statted (an unbounded read()
+        #      could swallow bytes written after the stat, then the next
+        #      resume would re-read them: duplicate events).
+        #   2. Only consume up to the last complete newline; a torn final
+        #      line stays unconsumed and is parsed whole on the next tick,
+        #      once the writer finishes it (JSONL lines are newline-
+        #      terminated, so a fragment now is a full line later).
         try:
             if entry is not None and st.st_size > entry[0]:
                 # Append-only resume: parse only the new bytes.
+                start = entry[2]
                 with open(jsonl_path, "rb") as fh:
-                    fh.seek(entry[2])
-                    raw = fh.read()
-                new_events, new_skipped = _parse_lines(raw, session_id, src)
-                events = list(entry[3]) + new_events
-                skipped = entry[4] + new_skipped
+                    fh.seek(start)
+                    raw = fh.read(st.st_size - start)
+                base_events: list[UsageEvent] = list(entry[3])
+                base_skipped = entry[4]
             else:
                 # Cold parse, or the file shrank (rewrite): start over.
-                raw = jsonl_path.read_bytes()
-                events, skipped = _parse_lines(raw, session_id, src)
+                start = 0
+                with open(jsonl_path, "rb") as fh:
+                    raw = fh.read(st.st_size)
+                base_events = []
+                base_skipped = 0
         except OSError:
             continue
 
+        last_nl = raw.rfind(b"\n")
+        complete = raw[: last_nl + 1] if last_nl >= 0 else b""
+        new_events, new_skipped = _parse_lines(complete, session_id, src)
+        events = base_events + new_events
+        skipped = base_skipped + new_skipped
+        offset = start + (last_nl + 1 if last_nl >= 0 else 0)
+
         if cache is not None:
-            cache[key] = (st.st_size, st.st_mtime_ns, st.st_size, events, skipped)
+            cache[key] = (st.st_size, st.st_mtime_ns, offset, events, skipped)
         yield from events
 
     if cache is not None:
