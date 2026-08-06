@@ -423,6 +423,44 @@ def test_migration_v3_to_v4_adds_is_rollup_column(tmp_path):
     store.close()
 
 
+def test_migration_v4_to_v5_purges_claude_rows_and_watermarks(tmp_path):
+    """The v0.7.0 Claude Code parser double-counted (one event per
+    transcript line instead of per API request), so v4 -> v5 deletes every
+    Claude Code row and its refresh watermarks; the next refresh
+    re-ingests deduped events from the transcripts. Other sources'
+    rows and watermarks must be untouched."""
+    db = tmp_path / "h.db"
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = HistoryStore.open(db, now_utc=now)
+    ts = datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc)
+    claude_dupes = [
+        UsageEvent(
+            timestamp=ts + timedelta(seconds=n),
+            session_id="claude-sess",
+            input_tokens=3, output_tokens=50,
+            cache_read_tokens=1000, cache_write_tokens=10,
+            host_app="Claude Code", model="claude-opus-4.8",
+        )
+        for n in range(3)  # the inflated per-line rows
+    ]
+    copilot = _ev(ts, "copilot-sess", i=7)
+    assert store.ingest(claude_dupes + [copilot]) == 4
+    store._set_meta("claude:proj/sess.jsonl", "123:456")
+    store._set_meta("file:copilot.log", "1:2")
+    store._set_meta("schema_version", "4")
+    store.close()
+
+    store = HistoryStore.open(db)
+    assert store._get_meta("schema_version") == SCHEMA_VERSION
+    hosts = [r[0] for r in store._conn.execute(
+        "SELECT host_app FROM events").fetchall()]
+    assert "Claude Code" not in hosts
+    assert len(hosts) == 1  # the copilot row survived
+    assert store._get_meta("claude:proj/sess.jsonl") is None
+    assert store._get_meta("file:copilot.log") == "1:2"
+    store.close()
+
+
 def test_ingest_handles_naive_timestamps(tmp_path):
     """UsageEvent may carry naive datetimes (mtime fallback); store normalizes."""
     store = HistoryStore.open(

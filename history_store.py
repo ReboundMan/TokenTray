@@ -52,8 +52,9 @@ from usage_core import UsageEvent, iter_usage_events
 from tokentray.parsers import iter_all_events
 from tokentray.parsers.agency_events import LOG_ROOT as AGENCY_LOG_ROOT
 from tokentray.parsers.copilot_session_state import LOG_DIR as SESSION_STATE_DIR
+from tokentray.parsers.claude_code import HOST_APP as CLAUDE_HOST_APP
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 TRIAL_DAYS = 60
 COFFEE_PROMPT_CADENCE_DAYS = 21
 DB_FILENAME = "history.db"
@@ -486,6 +487,27 @@ class HistoryStore:
             self._flag_existing_rollup_rows()
             current = "4"
             self._set_meta("schema_version", "4")
+        if current == "4":
+            # v4 -> v5: the v0.7.0 Claude Code parser counted one event per
+            # transcript LINE, but Claude Code writes one line per content
+            # block and repeats the same ``message.usage`` on every line of
+            # a response -- so every persisted Claude Code row is inflated
+            # (roughly 2.1x measured). The transcripts are still on disk
+            # and are the source of truth, so the honest cleanup is purge +
+            # re-ingest rather than a collapse heuristic: delete every
+            # Claude Code row and clear the ``claude:*`` refresh
+            # watermarks, and the next :meth:`refresh_from_disk` re-walks
+            # the transcripts with the deduped parser. Rows whose
+            # transcript was since deleted (Claude Code prunes after ~30
+            # days) are dropped rather than kept: they cannot be
+            # de-inflated after the fact, and the feature shipped days
+            # before this fix so no long history is at stake.
+            self._conn.execute(
+                "DELETE FROM events WHERE host_app = ?", (CLAUDE_HOST_APP,)
+            )
+            self._conn.execute("DELETE FROM meta WHERE key LIKE 'claude:%'")
+            current = "5"
+            self._set_meta("schema_version", "5")
 
     def _collapse_agency_rollups(self) -> None:
         """Deduplicate persisted Agency rollups, one row per session.

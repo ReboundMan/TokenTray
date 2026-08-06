@@ -12,6 +12,7 @@ Guards the contracts the spec makes binding:
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import sys
@@ -27,16 +28,26 @@ from tokentray.parsers.claude_code import (  # noqa: E402
     skipped_line_count,
 )
 
+# Each generated line gets unique requestId/message.id by default, matching
+# the live format (both ids present on every usage line). Lines of the SAME
+# API response share ids; tests exercising the per-request dedup pass
+# req_id/msg_id explicitly.
+_uniq = itertools.count()
+
 
 def _assistant_line(sid: str, ts: str, model: str = "claude-opus-4-8",
                      it: int = 100, ot: int = 20, cr: int = 500, cw: int = 30,
-                     content: str = "PRIVATE CONVERSATION CONTENT") -> str:
+                     content: str = "PRIVATE CONVERSATION CONTENT",
+                     req_id: str | None = None,
+                     msg_id: str | None = None) -> str:
+    n = next(_uniq)
     return json.dumps({
         "type": "assistant",
         "sessionId": sid,
         "timestamp": ts,
+        "requestId": req_id if req_id is not None else f"req_{n}",
         "message": {
-            "id": "msg_x",
+            "id": msg_id if msg_id is not None else f"msg_{n}",
             "model": model,
             "role": "assistant",
             "content": [{"type": "text", "text": content}],
@@ -116,7 +127,7 @@ def test_offset_resume_parses_only_appended_bytes(projects: Path):
     first = list(iter_claude_code_events(projects, cache=cache))
     assert len(first) == 1
     key = next(iter(cache))
-    size0, _, offset0, _, _ = cache[key]
+    size0, _, offset0, _, _, _ = cache[key]
     assert offset0 == size0  # offset advanced to EOF
 
     # Append a second assistant line; ensure mtime_ns changes even on
@@ -270,6 +281,110 @@ def test_tool_split_line_and_tooltip_pure_functions(projects: Path):
     tip = tool_split_tooltip(cache, events, now=fake_now)
     assert "1 transcript file(s) tracked" in tip
     assert "Today by model:" in tip
+
+
+def test_multi_block_response_counted_once(projects: Path):
+    """v0.7.1 double-count fix: Claude Code writes one line per CONTENT
+    BLOCK and repeats the full usage object (same requestId/message.id)
+    on every line of the response. The measured inflation was 2.1x."""
+    _write(projects / "p" / "s.jsonl",
+           _assistant_line("s", "2026-08-06T10:00:00.000Z", it=3, ot=50,
+                           cr=1000, cw=10, req_id="req_A", msg_id="msg_A"),
+           _assistant_line("s", "2026-08-06T10:00:01.000Z", it=3, ot=50,
+                           cr=1000, cw=10, req_id="req_A", msg_id="msg_A"),
+           _assistant_line("s", "2026-08-06T10:00:02.000Z", it=3, ot=50,
+                           cr=1000, cw=10, req_id="req_A", msg_id="msg_A"),
+           _assistant_line("s", "2026-08-06T10:01:00.000Z", it=5, ot=7,
+                           cr=2000, cw=20, req_id="req_B", msg_id="msg_B"))
+    events = list(iter_claude_code_events(projects))
+    assert len(events) == 2
+    a = next(e for e in events if e.output_tokens == 50)
+    assert (a.input_tokens, a.cache_read_tokens, a.cache_write_tokens) == (3, 1000, 10)
+
+
+def test_varying_usage_last_line_wins(projects: Path):
+    """Where usage differs across a request's lines the last line carries
+    the final totals (verified over all 1,718 varying requests on the
+    machine that caught the bug)."""
+    _write(projects / "p" / "s.jsonl",
+           _assistant_line("s", "2026-08-06T10:00:00.000Z", ot=10, cw=5,
+                           req_id="req_A"),
+           _assistant_line("s", "2026-08-06T10:00:03.000Z", ot=90, cw=40,
+                           req_id="req_A"))
+    events = list(iter_claude_code_events(projects))
+    assert len(events) == 1
+    assert events[0].output_tokens == 90
+    assert events[0].cache_write_tokens == 40
+
+
+def test_resume_straddling_request_boundary(projects: Path):
+    """A request's lines can straddle the offset-resume boundary (first
+    block flushed on one tick, the rest on the next). The appended line
+    must REPLACE the cached event, not append a duplicate."""
+    f = projects / "p" / "s.jsonl"
+    _write(f, _assistant_line("s", "2026-08-06T10:00:00.000Z", ot=10,
+                              req_id="req_A"))
+    cache: dict = {}
+    first = list(iter_claude_code_events(projects, cache=cache))
+    assert [e.output_tokens for e in first] == [10]
+
+    with open(f, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write(_assistant_line("s", "2026-08-06T10:00:04.000Z", ot=95,
+                                 req_id="req_A") + "\n")
+        fh.write(_assistant_line("s", "2026-08-06T10:01:00.000Z", ot=5,
+                                 req_id="req_B") + "\n")
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+    second = list(iter_claude_code_events(projects, cache=cache))
+    assert sorted(e.output_tokens for e in second) == [5, 95]
+    # Unchanged third pass: served from cache, still deduped.
+    third = list(iter_claude_code_events(projects, cache=cache))
+    assert sorted(e.output_tokens for e in third) == [5, 95]
+
+
+def test_request_repeated_across_files_counted_once(projects: Path):
+    """Cross-file guard: no observed layout repeats a request id across
+    files, but if one ever does (e.g. a fork feature copying history into
+    a new session file) the copy must not double the count."""
+    _write(projects / "p" / "s1.jsonl",
+           _assistant_line("s1", "2026-08-06T10:00:00.000Z", ot=10,
+                           req_id="req_A", msg_id="msg_A"))
+    _write(projects / "p" / "s2.jsonl",
+           _assistant_line("s2", "2026-08-06T10:00:00.000Z", ot=10,
+                           req_id="req_A", msg_id="msg_A"),
+           _assistant_line("s2", "2026-08-06T11:00:00.000Z", ot=3,
+                           req_id="req_B"))
+    events = list(iter_claude_code_events(projects))
+    assert sorted(e.output_tokens for e in events) == [3, 10]
+    # Every fresh pass dedupes anew; nothing leaks between passes.
+    cache: dict = {}
+    assert len(list(iter_claude_code_events(projects, cache=cache))) == 2
+    assert len(list(iter_claude_code_events(projects, cache=cache))) == 2
+
+
+def test_missing_request_id_falls_back_to_message_id(projects: Path):
+    """requestId has been present on every live line, but the dedup must
+    degrade gracefully: message.id fallback, then per-line counting when
+    neither id is usable."""
+    with_mid = json.loads(_assistant_line("s", "2026-08-06T10:00:00.000Z",
+                                          ot=10, msg_id="msg_A"))
+    del with_mid["requestId"]
+    with_mid_2 = json.loads(_assistant_line("s", "2026-08-06T10:00:01.000Z",
+                                            ot=60, msg_id="msg_A"))
+    del with_mid_2["requestId"]
+    no_ids_1 = json.loads(_assistant_line("s", "2026-08-06T11:00:00.000Z", ot=1))
+    del no_ids_1["requestId"]
+    no_ids_1["message"]["id"] = 42  # not a string: unusable
+    no_ids_2 = json.loads(_assistant_line("s", "2026-08-06T11:00:01.000Z", ot=2))
+    del no_ids_2["requestId"]
+    no_ids_2["message"]["id"] = 42
+    _write(projects / "p" / "s.jsonl",
+           json.dumps(with_mid), json.dumps(with_mid_2),
+           json.dumps(no_ids_1), json.dumps(no_ids_2))
+    events = list(iter_claude_code_events(projects))
+    # msg_A pair collapses (last wins); the id-less pair stays per-line.
+    assert sorted(e.output_tokens for e in events) == [1, 2, 60]
 
 
 def test_chains_into_iter_all_events(projects: Path, tmp_path: Path, monkeypatch):

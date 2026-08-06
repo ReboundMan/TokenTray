@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-06
+
+### Fixed
+- Claude Code usage counted at roughly double its true value. Claude Code
+  writes one transcript line per content block and repeats the same
+  `message.usage` object (same `requestId`) on every line of an API
+  response; the v0.7.0 parser counted each line as an independent event
+  (measured 2.1x inflation: 32,815 lines vs 15,518 actual requests).
+  Events now dedupe by `requestId` with last-line-wins (the last line
+  carries the request's final totals), including when a request's lines
+  straddle an offset-resume boundary or, defensively, repeat across
+  files. Schema bumped to v5: the migration purges the inflated Claude
+  Code rows and clears their refresh watermarks so history re-ingests
+  correct totals from the transcripts on the next refresh.
+
 ## [0.7.0] - 2026-08-05
 
 ### Added

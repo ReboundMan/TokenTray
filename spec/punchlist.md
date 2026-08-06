@@ -24,6 +24,12 @@
 
 <!-- completed items (most recent on top) -->
 
+- [x] Claude Code usage double-counted: one transcript line per content block,
+  each repeating the same `message.usage` (same `requestId`), counted as
+  independent events (2.1x measured). Parser now dedupes by `requestId`,
+  last line wins; schema v5 purges inflated rows and re-ingests from
+  transcripts. (2026-08-06)
+
 - [x] Advanced tab under-counted and lost per-tool / per-model detail after
   resuming prior sessions (showed ~30M / one model vs Today's 401M across
   several LLMs). Session-state rollups now key by `(session, host, model)` and

@@ -15,13 +15,33 @@ conversation content. This parser extracts ONLY ``message.usage``,
 never reads, stores, or yields message content. Keep it that way: any
 future field addition here must be a metadata field, never content.
 
+ONE EVENT PER API REQUEST, not per line (the v0.7.0 double-count fix):
+Claude Code writes one JSONL line per CONTENT BLOCK, and every line of
+the same API response repeats the full ``message.usage`` object with the
+same ``requestId`` and ``message.id``. Summing per line multiplied real
+usage by the block count (measured 2.1x across 32,815 lines / 15,518
+requests on the machine that caught it). Lines are therefore deduped by
+``requestId`` (``message.id`` fallback), last line wins: where usage
+varies across a request's lines the last line always carries the final
+totals (verified against every varying request on the same machine, all
+1,718 of them). Both ids were present on every one of those lines; a
+line with neither id degrades to per-line counting rather than being
+dropped. As a guard against transcript layouts that copy history into a
+new file (e.g. a future fork feature), a request key is also never
+yielded twice across files within one iteration pass; today no request
+id appears in more than one file (verified across 305 files).
+
 Incremental parsing: session transcripts are append-only, so the cache
 stores a byte offset per file alongside ``(size, mtime_ns)`` and a
 resume parses only the appended bytes. A file whose size SHRANK (rewrite
 or truncation, not append) falls back to a full re-parse. This is one
 step past the Copilot ``LogCache``'s skip-unchanged shape, which the
 spec names as the pattern to mirror; append-only files make the stronger
-offset resume safe.
+offset resume safe. A request's lines can straddle the resume boundary
+(first block flushed on one tick, the rest on the next), so the cache
+also keeps each event's request key: an appended line whose key is
+already present REPLACES the earlier event in place instead of
+appending a duplicate.
 
 Failure posture (spec Behavior 5): read-only, content-blind, resilient.
 A malformed line or unreadable file is skipped and counted; the skip
@@ -44,10 +64,13 @@ PROJECTS_DIR = Path(os.path.expanduser("~/.claude/projects"))
 
 HOST_APP = "Claude Code"
 
-# rel-path str -> (size_bytes, mtime_ns, byte_offset, events, skipped_lines).
-# The caller owns the dict, same contract shape as copilot_logs.LogCache
-# (which is a 3-tuple; this one carries two extra slots: the resume offset
-# and the malformed-line count). The two caches are never interchangeable.
+# rel-path str -> (size_bytes, mtime_ns, byte_offset, events, skipped_lines,
+# request_keys). The caller owns the dict, same contract shape as
+# copilot_logs.LogCache (which is a 3-tuple; this one carries three extra
+# slots: the resume offset, the malformed-line count, and the per-event
+# request-key list that dedup-on-resume needs -- ``request_keys`` is
+# parallel to ``events``, entry i holding event i's requestId/message.id,
+# or None). The two caches are never interchangeable.
 ClaudeCache = dict
 
 # Both transcript layouts Claude Code writes (round-2 Rookie High: the
@@ -70,8 +93,16 @@ def _parse_ts(value) -> datetime | None:
     return ts
 
 
-def _parse_lines(raw: bytes, session_id: str, source_path: str) -> tuple[list[UsageEvent], int]:
-    """Parse JSONL bytes into events. Returns (events, skipped_line_count).
+def _parse_lines(
+    raw: bytes, session_id: str, source_path: str
+) -> tuple[list[tuple[str | None, UsageEvent]], int]:
+    """Parse JSONL bytes into (request_key, event) pairs, plus a skip count.
+
+    ``request_key`` is the line's ``requestId`` (``message.id`` fallback,
+    None if neither is a string); the caller dedupes on it, last line
+    wins, so a multi-block response contributes ONE event. Dedup lives in
+    the caller because a request's lines can straddle an offset-resume
+    boundary and the merge needs the previously cached keys.
 
     Only assistant lines with a usage dict yield events; every other
     well-formed line (user messages, tool results, sidechain chatter) is
@@ -81,7 +112,7 @@ def _parse_lines(raw: bytes, session_id: str, source_path: str) -> tuple[list[Us
     skipped: they are known non-usage, filtered so they can't inflate the
     Events stat or plant a "<synthetic>" row in per-model tables
     (round-2 Rookie)."""
-    events: list[UsageEvent] = []
+    pairs: list[tuple[str | None, UsageEvent]] = []
     skipped = 0
     for line in raw.split(b"\n"):
         if not line.strip():
@@ -119,6 +150,11 @@ def _parse_lines(raw: bytes, session_id: str, source_path: str) -> tuple[list[Us
         sid = obj.get("sessionId")
         if not isinstance(sid, str) or not sid:
             sid = session_id
+        req_key = obj.get("requestId")
+        if not isinstance(req_key, str) or not req_key:
+            req_key = msg.get("id")
+            if not isinstance(req_key, str) or not req_key:
+                req_key = None
 
         def _tok(key: str) -> int:
             # NaN/Infinity are valid to Python's json loader and would
@@ -130,21 +166,24 @@ def _parse_lines(raw: bytes, session_id: str, source_path: str) -> tuple[list[Us
                 return 0
             return int(v)
 
-        events.append(
-            UsageEvent(
-                timestamp=ts,
-                session_id=sid,
-                input_tokens=_tok("input_tokens"),
-                output_tokens=_tok("output_tokens"),
-                cache_read_tokens=_tok("cache_read_input_tokens"),
-                cache_write_tokens=_tok("cache_creation_input_tokens"),
-                host_app=HOST_APP,
-                model=normalize_model(raw_model) if raw_model else None,
-                raw_model=raw_model,
-                source_path=source_path,
+        pairs.append(
+            (
+                req_key,
+                UsageEvent(
+                    timestamp=ts,
+                    session_id=sid,
+                    input_tokens=_tok("input_tokens"),
+                    output_tokens=_tok("output_tokens"),
+                    cache_read_tokens=_tok("cache_read_input_tokens"),
+                    cache_write_tokens=_tok("cache_creation_input_tokens"),
+                    host_app=HOST_APP,
+                    model=normalize_model(raw_model) if raw_model else None,
+                    raw_model=raw_model,
+                    source_path=source_path,
+                ),
             )
         )
-    return events, skipped
+    return pairs, skipped
 
 
 def iter_claude_code_events(
@@ -163,6 +202,20 @@ def iter_claude_code_events(
         return
 
     seen: set[str] = set()
+    # Cross-file guard: a request key is yielded at most once per pass.
+    # No transcript layout observed to date repeats a request across
+    # files (verified over 305 files), so this only bites if e.g. a
+    # future fork feature copies history lines into a new session file.
+    yielded_keys: set[str] = set()
+
+    def _yield_deduped(events, request_keys):
+        for ev, rk in zip(events, request_keys):
+            if rk is not None:
+                if rk in yielded_keys:
+                    continue
+                yielded_keys.add(rk)
+            yield ev
+
     paths: list[Path] = []
     for pattern in _GLOBS:
         paths.extend(root.glob(pattern))
@@ -178,7 +231,7 @@ def iter_claude_code_events(
 
         entry = cache.get(key) if cache is not None else None
         if entry is not None and entry[0] == st.st_size and entry[1] == st.st_mtime_ns:
-            yield from entry[3]
+            yield from _yield_deduped(entry[3], entry[5])
             continue
 
         # Live-writer discipline (round-2 Hawk H-1): a transcript can be
@@ -199,6 +252,7 @@ def iter_claude_code_events(
                     raw = fh.read(st.st_size - start)
                 base_events: list[UsageEvent] = list(entry[3])
                 base_skipped = entry[4]
+                base_keys: list[str | None] = list(entry[5])
             else:
                 # Cold parse, or the file shrank (rewrite): start over.
                 start = 0
@@ -206,19 +260,38 @@ def iter_claude_code_events(
                     raw = fh.read(st.st_size)
                 base_events = []
                 base_skipped = 0
+                base_keys = []
         except OSError:
             continue
 
         last_nl = raw.rfind(b"\n")
         complete = raw[: last_nl + 1] if last_nl >= 0 else b""
-        new_events, new_skipped = _parse_lines(complete, session_id, src)
-        events = base_events + new_events
+        new_pairs, new_skipped = _parse_lines(complete, session_id, src)
+
+        # Merge with last-line-wins dedup per request key: a later line of
+        # an already-seen request (another content block of the same API
+        # response, possibly appended a tick later) REPLACES the earlier
+        # event in place -- its usage is the request's final totals.
+        events = base_events
+        request_keys = base_keys
+        index = {rk: i for i, rk in enumerate(request_keys) if rk is not None}
+        for rk, ev in new_pairs:
+            if rk is not None and rk in index:
+                events[index[rk]] = ev
+            else:
+                if rk is not None:
+                    index[rk] = len(events)
+                events.append(ev)
+                request_keys.append(rk)
         skipped = base_skipped + new_skipped
         offset = start + (last_nl + 1 if last_nl >= 0 else 0)
 
         if cache is not None:
-            cache[key] = (st.st_size, st.st_mtime_ns, offset, events, skipped)
-        yield from events
+            cache[key] = (
+                st.st_size, st.st_mtime_ns, offset, events, skipped,
+                request_keys,
+            )
+        yield from _yield_deduped(events, request_keys)
 
     if cache is not None:
         for stale in [k for k in cache if k not in seen]:
