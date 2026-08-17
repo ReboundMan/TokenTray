@@ -7,13 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-16
+
+The first signed release. TokenTray has been feature-stable across the 0.6-0.7
+line (Copilot CLI, Agency, and Claude Code sources; history; the Advanced tab),
+and shipping with a real publisher signature is the milestone that marks 1.0.
+
 ### Added
-- Code signing via Azure Artifact Signing (shared ReboundMan.com LLC
-  publisher setup): `build.ps1 -Sign` signs `TokenTray.exe` before
-  packaging, the installer and uninstaller via Inno Setup's `SignTool=`,
-  verifies both signatures including signer identity, and emits SHA256
-  files. Signing is local-only; CI now builds an `-UNSIGNED`-suffixed
-  installer for validation and no longer publishes releases.
+- Code signing via Azure Artifact Signing (publisher `ReboundMan.com LLC`):
+  `build.ps1 -Sign` signs `TokenTray.exe` before packaging, the installer
+  and uninstaller via Inno Setup's `SignTool=`, verifies both signatures
+  including signer identity, and emits SHA256 files. Signing is local-only;
+  CI now builds an `-UNSIGNED`-suffixed installer for validation and no
+  longer publishes releases.
 
 ## [0.7.1] - 2026-08-06
 
