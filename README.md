@@ -1,6 +1,6 @@
 # TokenTray
 
-A lightweight Windows **system tray app** that shows your live **GitHub Copilot CLI** token usage, parsed from local telemetry logs. No network calls, no extra accounts — just a number in your tray and a click-away breakdown.
+A lightweight Windows **system tray app** that shows your live AI token usage from **Copilot CLI**, **Agency**, and **Claude Code**, parsed from the logs those tools already write locally. No network calls, no extra accounts — just a number in your tray and a click-away breakdown.
 
 ![TokenTray screenshot](assets/screenshot.png)
 
@@ -24,7 +24,7 @@ rollups survive the Copilot CLI rotating its raw log files.
   after you first run a TokenTray build that includes this feature.
 - **After the trial**: recording pauses unless you tick
   *Settings → Advanced history (record locally)*. Re-enabling it after the
-  trial requires a one-time honor-system "coffee" unlock — see
+  trial asks for a one-time honor-system tip — see
   [Supporting the project](#supporting-the-project) below. Any rows captured
   during the trial remain queryable forever.
 - **Privacy**: history never leaves your machine — no network calls, no
@@ -48,13 +48,14 @@ Scope is local Copilot **CLI only** (mirrors the "Agency" usage in the Microsoft
 
 TokenTray is free, open-source, and ad-free. Local recording during the
 60-day trial is unconditional. After the trial, continuing to record new
-events into the local history database is gated by a one-time
-[Buy Me a Coffee](https://buymeacoffee.com/reboundman) tip — there's no
-account, no license key, and no telemetry. The honor-system flag is stored
-locally in your history database.
+events into the local history database asks for a one-time
+[tip](https://reboundman.com/tokentray-tip) — there's no account, no
+license key, and no telemetry. The honor-system flag is stored locally in
+your history database. The tip button lives in **About TokenTray** in the
+tray menu.
 
 If you reinstall or wipe state, *Settings → Restore supporter status* flips
-the flag back without re-donating. If you'd rather not be reminded, the
+the flag back without re-tipping. If you'd rather not be reminded, the
 startup nag has a "Don't show again" checkbox and otherwise appears at most
 once every 21 days (and never during the free trial).
 
@@ -64,7 +65,7 @@ once every 21 days (and never during the free trial).
 
 ### Option 1: Run the installer (recommended)
 
-1. Grab the latest `TokenTray-Setup-vX.Y.Z.exe` from the [Releases](https://github.com/jeffjame_microsoft/TokenTray/releases) page.
+1. Grab the latest `TokenTray-Setup-X.Y.Z.exe` from the [Releases](https://github.com/ReboundMan/TokenTray/releases) page.
 2. Double-click. Click **Next** through the wizard. On the *Startup* page you can opt in to launching TokenTray automatically at sign-in.
 3. The app launches immediately and lives in your system tray. You can manage it later from **Add or Remove Programs** like any normal Windows app.
 
@@ -74,7 +75,11 @@ The installer is a per-user install (no admin required), drops files into `%LOCA
 
 Prefer not to install? Download `TokenTray-vX.Y.Z-win64.zip` from the same Releases page, extract it anywhere, and double-click `TokenTray.exe` inside the extracted folder.
 
-> ⚠️ **Windows SmartScreen** may warn the first time you launch the installer or the portable `.exe` because the binary is not code-signed. Click **More info → Run anyway**. The `.sha256.txt` file alongside each asset lets you verify integrity if you want.
+> ℹ️ Since v1.0.0 the installer and `TokenTray.exe` are code-signed by
+> ReboundMan.com LLC (Azure Artifact Signing). SmartScreen may still show a
+> download-reputation advisory while a new release accrues download volume;
+> the signature is what removes the hard "Windows protected your PC" block.
+> The `.sha256.txt` file alongside each asset lets you verify integrity.
 
 > ℹ️ **Why no single onefile `.exe`?** PyInstaller's onefile mode extracts DLLs to `%TEMP%` on launch, where Windows Defender's real-time protection rewrites them and trips Windows' code-integrity check (`STATUS_INVALID_IMAGE_HASH` / "Bad Image"). The installer and the portable zip both unpack to disk once, then run cleanly.
 
@@ -83,7 +88,7 @@ Prefer not to install? Download `TokenTray-vX.Y.Z-win64.zip` from the same Relea
 Requirements: Python 3.11+ on Windows.
 
 ```powershell
-git clone https://github.com/jeffjame_microsoft/TokenTray.git
+git clone https://github.com/ReboundMan/TokenTray.git
 cd TokenTray
 py -m venv .venv
 .\.venv\Scripts\pip install -e .
@@ -128,6 +133,11 @@ from every known local source and de-duplicates by `session_id`:
   sessions (`producer` = `copilot-agent` / `agency`).
 - **`~/.agency/logs/session_*/`** — older Agency builds that kept their own
   event stream / captured process log.
+- **`~/.claude/projects/<slug>/<session>.jsonl`** — Claude Code session
+  transcripts (main sessions and subagents). Parsing is content-blind: only
+  `message.usage`, model, timestamp, and session id are read, one event per
+  API request (deduplicated by `requestId`), and conversation content never
+  reaches the app.
 
 Because the CLI's `session_id` is shared across these sources (a session can
 appear in more than one), the process-log / Agency parsers win and their
@@ -168,30 +178,12 @@ winget install JRSoftware.InnoSetup
 
 `build.ps1` auto-prefers the 3.12 build venv if it exists; otherwise it falls back to the daily-run venv.
 
-The release process (manual until EMU policy permits hosted Actions runners):
-
-```powershell
-# 1. Bump the version in pyproject.toml AND installer\TokenTray.iss (MyAppVersion)
-# 2. Build
-.\build.ps1 -Clean -Installer
-
-# 3. Package the portable zip + hashes
-Compress-Archive dist\TokenTray\* dist\TokenTray-vX.Y.Z-win64.zip -Force
-(Get-FileHash dist\TokenTray-Setup-X.Y.Z.exe -Algorithm SHA256).Hash + "  TokenTray-Setup-X.Y.Z.exe" |
-    Out-File -Encoding ASCII dist\TokenTray-Setup-X.Y.Z.exe.sha256.txt
-(Get-FileHash dist\TokenTray-vX.Y.Z-win64.zip -Algorithm SHA256).Hash + "  TokenTray-vX.Y.Z-win64.zip" |
-    Out-File -Encoding ASCII dist\TokenTray-vX.Y.Z-win64.zip.sha256.txt
-
-# 4. Tag and publish
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
-gh release create vX.Y.Z `
-    dist\TokenTray-Setup-X.Y.Z.exe dist\TokenTray-Setup-X.Y.Z.exe.sha256.txt `
-    dist\TokenTray-vX.Y.Z-win64.zip dist\TokenTray-vX.Y.Z-win64.zip.sha256.txt `
-    --generate-notes
-```
-
-A `.github/workflows/release.yml` is in the repo for the day GitHub-hosted runners are allowed on this EMU tenant; it will automatically build and publish the same artifacts on every `v*` tag push.
+The release process (local, signed) is documented step by step in
+[`spec/DEPLOY.md`](spec/DEPLOY.md): version bump, tests, tag, then
+`.\build.ps1 -Clean -Installer -Sign` and a draft-first `gh release`.
+CI (`.github/workflows/release.yml`) only validates that the build chain
+compiles; it produces an `-UNSIGNED`-suffixed installer and publishes
+nothing.
 
 ---
 

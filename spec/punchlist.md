@@ -24,6 +24,15 @@
 
 <!-- completed items (most recent on top) -->
 
+- [x] Replace the BMAC about screen with the WordMD-model About dialog
+  (about_dialog.py + support_links.py; gating retained by JJ decision; tip
+  destination via reboundman.com/tokentray-tip redirect, BMAC until a
+  TokenTray Stripe product exists). Product page tokentray.html added on
+  reboundman.com. Fleet panel Hawk/Sage/Lens/Beacon/Rookie ran; all
+  applied findings in reviews/about-screen-and-product-page-*.md.
+  OPEN for Stripe setup day: SKU must not clone wordmd_tip_once (payment
+  unlocks a gated feature; see support_links.py docstring). (2026-08-16)
+
 - [x] Code-sign the installer via Azure Artifact Signing, reusing the WordMD
   publisher setup (WordMD spec 10024): shared `WordMD-PublicTrustCert` profile
   (Basic tier allows one Public Trust profile per account; re-confirmed

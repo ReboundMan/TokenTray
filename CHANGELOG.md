@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The Buy Me a Coffee dialog is now an About TokenTray dialog following the
+  WordMD model: app name and version, product-page and GitHub links, then
+  the support section. The honor-system unlock and 21-day nag cadence are
+  unchanged. The tip destination is now the stable
+  `reboundman.com/tokentray-tip` redirect (currently pointing at Buy Me a
+  Coffee; repointable to a Stripe Payment Link without an app release).
+  Tray menu: "Buy me a coffee" under Settings became a top-level
+  "About TokenTray".
+- Fleet-review fixes (Hawk/Sage/Lens/Beacon/Rookie, reviews/
+  about-screen-and-product-page-*.md): gate-reason dialogs are titled
+  "Unlock Advanced history" instead of "About TokenTray"; the suppress
+  checkbox only appears on the startup nag (the only path that honors it);
+  Enter now defaults to "Maybe later" instead of the unlock; the
+  advanced-toggle gate copy no longer describes the ended trial as
+  upcoming; banner text no longer points at the deleted Settings menu item;
+  the locked-Advanced pane no longer claims VS Code capture; screen-reader
+  description on the tip button, visible keyboard-focus indicators, and a
+  WCAG-compliant checkbox border; README repo URLs and signing note
+  corrected.
+
 ## [1.0.0] - 2026-08-16
 
 The first signed release. TokenTray has been feature-stable across the 0.6-0.7

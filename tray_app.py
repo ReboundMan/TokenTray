@@ -80,15 +80,14 @@ class TrayApp:
         settings_menu.addAction(self._act_history)
 
         settings_menu.addSeparator()
-        self._act_coffee = QAction("Buy me a coffee ☕", settings_menu)
-        self._act_coffee.triggered.connect(self._on_coffee_menu)
-        settings_menu.addAction(self._act_coffee)
-
         self._act_restore = QAction("Restore supporter status", settings_menu)
         self._act_restore.triggered.connect(self._on_restore_supporter)
         settings_menu.addAction(self._act_restore)
 
         menu.addSeparator()
+        self._act_about = QAction("About TokenTray", menu)
+        self._act_about.triggered.connect(self._on_about_menu)
+        menu.addAction(self._act_about)
         menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_activated)
@@ -168,16 +167,16 @@ class TrayApp:
                 "Uncheck to opt out of local recording."
             )
         elif status.advanced_enabled and status.supporter_purchased:
-            tip = "Advanced history active — recording locally. Thanks for the coffee!"
+            tip = "Advanced history active. Recording locally. Thanks for the tip!"
         elif status.advanced_enabled and not status.supporter_purchased:
             tip = (
                 "Advanced is enabled but locked. "
-                "Buy me a coffee to resume recording new events."
+                "A one-time tip resumes recording new events."
             )
         else:
             tip = (
-                "Trial ended. Check to resume local recording (requires a "
-                "one-time coffee). Existing history remains viewable either way."
+                "Trial ended. Check to resume local recording (asks for a "
+                "one-time tip). Existing history remains viewable either way."
             )
         self._act_history.setToolTip(tip)
 
@@ -202,8 +201,8 @@ class TrayApp:
             # is honest if the user dismisses without unlocking.
             self._sync_history_menu_state()
             try:
-                from coffee_dialog import show_coffee_dialog
-                outcome = show_coffee_dialog(
+                from about_dialog import show_about_dialog
+                outcome = show_about_dialog(
                     None, self.store, reason="advanced_toggle"
                 )
             except Exception:
@@ -226,12 +225,12 @@ class TrayApp:
         self.refresh()
 
     # ------------------------------------------------------------------
-    def _on_coffee_menu(self) -> None:
+    def _on_about_menu(self) -> None:
         if self.store is None:
             return
         try:
-            from coffee_dialog import show_coffee_dialog
-            show_coffee_dialog(None, self.store, reason="menu")
+            from about_dialog import show_about_dialog
+            show_about_dialog(None, self.store, reason="menu")
         except Exception:
             import traceback
             traceback.print_exc()
@@ -246,7 +245,7 @@ class TrayApp:
             QMessageBox.information(
                 None,
                 "TokenTray",
-                "Supporter status is already active. Thanks for the coffee! ☕",
+                "Supporter status is already active. Thanks for the tip!",
             )
             return
         choice = QMessageBox.question(
@@ -254,8 +253,8 @@ class TrayApp:
             "Restore supporter status",
             (
                 "This flips the local supporter flag without opening the "
-                "Buy Me a Coffee page. Use it only if you've previously "
-                "donated (e.g. after reinstalling).\n\nContinue?"
+                "tip page. Use it only if you've previously tipped "
+                "(e.g. after reinstalling).\n\nContinue?"
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -272,8 +271,8 @@ class TrayApp:
         try:
             if not self.store.should_show_coffee_prompt():
                 return
-            from coffee_dialog import show_coffee_dialog
-            show_coffee_dialog(None, self.store, reason="startup_nag")
+            from about_dialog import show_about_dialog
+            show_about_dialog(None, self.store, reason="startup_nag")
         except Exception:
             import traceback
             traceback.print_exc()

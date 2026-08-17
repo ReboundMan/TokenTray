@@ -153,19 +153,21 @@ class TierStatus:
             return (
                 f"Free trial: {self.trial_days_remaining} day"
                 f"{'' if self.trial_days_remaining == 1 else 's'} remaining. "
-                "After the trial, buy me a coffee in Settings to keep recording."
+                "After the trial, a one-time tip (About TokenTray in the "
+                "tray menu) keeps recording."
             )
         if self.advanced_enabled and self.supporter_purchased:
-            return "Advanced history active — recording locally. Thanks for the coffee! ☕"
+            return "Advanced history active. Recording locally. Thanks for the tip!"
         if self.advanced_enabled and not self.supporter_purchased:
             return (
                 "Advanced history is enabled but locked. "
-                "Buy me a coffee in Settings to resume recording new events."
+                "A one-time tip (About TokenTray in the tray menu) resumes "
+                "recording new events."
             )
         return (
             "Trial ended. Recording is paused. "
-            "Buy me a coffee in Settings to resume capturing new events. "
-            "Existing data below is still viewable."
+            "A one-time tip (About TokenTray in the tray menu) resumes "
+            "capturing new events. Existing data below is still viewable."
         )
 
 

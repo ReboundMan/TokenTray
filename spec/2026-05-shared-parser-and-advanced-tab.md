@@ -1,5 +1,12 @@
 # Phase spec: Unified token-usage parser + Advanced tab
 
+> **Update 2026-08-16**: `coffee_dialog.py`, referenced below as the BMC
+> unlock dialog, was replaced by `about_dialog.py` + `support_links.py`
+> (WordMD-model About screen; tip destination now goes through the
+> `reboundman.com/tokentray-tip` redirect). The gating semantics this spec
+> defines are unchanged. Module names below are left as written; this spec is
+> a historical record.
+
 **Status**: Approved (2026-05-24)
 **Owner**: jeffjame
 **Related**: AgencyUsageReport (consumer)

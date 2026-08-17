@@ -326,8 +326,8 @@ class PopupWindow(QWidget):
 
         body = QLabel(
             "TokenTray captures which host app (Copilot CLI, "
-            "Claude Code, Agency, VS Code) and which model produced "
-            "every event. Buy me a coffee to unlock the breakdown "
+            "Claude Code, Agency) and which model produced "
+            "every event. A one-time tip unlocks the breakdown "
             "tables on this tab."
         )
         body.setWordWrap(True)
@@ -459,13 +459,13 @@ class PopupWindow(QWidget):
         self._refresh_advanced()
 
     def _on_advanced_unlock_clicked(self) -> None:
-        # Late import keeps coffee_dialog (and its Qt deps) out of the
+        # Late import keeps about_dialog (and its Qt deps) out of the
         # popup-open hot path.
         if self._store is None:
             return
-        from coffee_dialog import show_coffee_dialog
+        from about_dialog import show_about_dialog
 
-        outcome = show_coffee_dialog(self, self._store, reason="advanced_tab")
+        outcome = show_about_dialog(self, self._store, reason="advanced_tab")
         if outcome == "unlocked":
             # The Advanced-tab BMC button is an explicit "unlock Advanced"
             # action, so flip BOTH gate flags. mark_supporter_purchased()

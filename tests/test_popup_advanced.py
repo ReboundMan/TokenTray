@@ -234,15 +234,15 @@ def test_advanced_tab_bmc_button_unlocks_both_flags(popup, store, monkeypatch):
     popup._tabs.setCurrentIndex(idx)
     assert popup._adv_stack.currentIndex() == 0  # locked
 
-    # Patch the coffee dialog so the test doesn't actually pop a modal:
-    # simulate the "I bought you a coffee" outcome by marking the supporter
+    # Patch the About dialog so the test doesn't actually pop a modal:
+    # simulate the "I already tipped" outcome by marking the supporter
     # purchased (as the real dialog would) and returning "unlocked".
     def _fake_dialog(parent, store, *, reason="menu"):
         store.mark_supporter_purchased()
         return "unlocked"
 
-    import coffee_dialog
-    monkeypatch.setattr(coffee_dialog, "show_coffee_dialog", _fake_dialog)
+    import about_dialog
+    monkeypatch.setattr(about_dialog, "show_about_dialog", _fake_dialog)
 
     popup._advanced_period = "all_time"
     popup._on_advanced_unlock_clicked()
