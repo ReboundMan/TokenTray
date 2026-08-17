@@ -24,6 +24,14 @@
 
 <!-- completed items (most recent on top) -->
 
+- [x] Code-sign the installer via Azure Artifact Signing, reusing the WordMD
+  publisher setup (WordMD spec 10024): shared `WordMD-PublicTrustCert` profile
+  (Basic tier allows one Public Trust profile per account; re-confirmed
+  account-scope Signer deliberately per that spec's standing caveat),
+  `build.ps1 -Sign`, `#ifdef SIGN` in TokenTray.iss, CI demoted to unsigned
+  build validation, checklist in spec/DEPLOY.md. First signed release pending.
+  (2026-08-16)
+
 - [x] Claude Code usage double-counted: one transcript line per content block,
   each repeating the same `message.usage` (same `requestId`), counted as
   independent events (2.1x measured). Parser now dedupes by `requestId`,

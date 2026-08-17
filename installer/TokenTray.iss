@@ -14,7 +14,7 @@
 #define MyAppName        "TokenTray"
 #define MyAppVersion     "0.7.1"
 #define MyAppPublisher   "Jeff James"
-#define MyAppURL         "https://github.com/jeffjame_microsoft/TokenTray"
+#define MyAppURL         "https://github.com/ReboundMan/TokenTray"
 #define MyAppExeName     "TokenTray.exe"
 #define MyAppId          "{{4ACDCE17-4BBD-4313-A1E2-FA6E42B30D7C}"
 #define SourceDir        "..\dist\TokenTray"
@@ -32,7 +32,19 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
+; Signed builds only via build.ps1 -Sign, which supplies /DSIGN plus the
+; /S"artifactsigning=..." tool definition (Azure Artifact Signing; shares the
+; ReboundMan.com LLC publisher setup established for WordMD, spec 10024 there).
+; The #ifdef guard keeps a plain ISCC run compiling for CI validation, and the
+; -UNSIGNED suffix makes sure such a build can never pass as a releasable
+; artifact.
+#ifdef SIGN
+SignTool=artifactsigning
+SignedUninstaller=yes
 OutputBaseFilename=TokenTray-Setup-{#MyAppVersion}
+#else
+OutputBaseFilename=TokenTray-Setup-{#MyAppVersion}-UNSIGNED
+#endif
 SetupIconFile=..\assets\tokentray.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/max

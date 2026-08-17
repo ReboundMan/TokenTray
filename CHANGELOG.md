@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Code signing via Azure Artifact Signing (shared ReboundMan.com LLC
+  publisher setup): `build.ps1 -Sign` signs `TokenTray.exe` before
+  packaging, the installer and uninstaller via Inno Setup's `SignTool=`,
+  verifies both signatures including signer identity, and emits SHA256
+  files. Signing is local-only; CI now builds an `-UNSIGNED`-suffixed
+  installer for validation and no longer publishes releases.
+
 ## [0.7.1] - 2026-08-06
 
 ### Fixed
