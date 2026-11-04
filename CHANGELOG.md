@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-04
+
 ### Changed
 - Token counts in the popup now carry thousands separators ("13,974M"
   instead of "13974M") in the Advanced tables, Today stat tiles, History
