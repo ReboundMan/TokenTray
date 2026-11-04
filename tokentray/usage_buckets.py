@@ -124,8 +124,15 @@ def bucket_by_hour(
     return buckets
 
 
-def fmt_tokens(n: int) -> str:
-    """Compact token-count formatting suitable for a tray badge (max 4 chars)."""
+def fmt_tokens(n: int, *, grouped: bool = False) -> str:
+    """Compact token-count formatting.
+
+    The default form stays badge-tight for the tray icon, where every
+    pixel counts. ``grouped=True`` adds a thousands separator to the
+    integer-M branch ("13,974M" instead of "13974M") for popup surfaces
+    with room; the other branches never reach four digits, so the flag
+    changes nothing there.
+    """
     if n < 1_000:
         return str(n)
     if n < 10_000:
@@ -134,7 +141,7 @@ def fmt_tokens(n: int) -> str:
         return f"{n//1000}k"
     if n < 10_000_000:
         return f"{n/1_000_000:.1f}M"
-    return f"{n//1_000_000}M"
+    return f"{n//1_000_000:,}M" if grouped else f"{n//1_000_000}M"
 
 
 __all__ = [

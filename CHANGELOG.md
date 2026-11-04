@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Token counts in the popup now carry thousands separators ("13,974M"
+  instead of "13974M") in the Advanced tables, Today stat tiles, History
+  tiles, and the per-tool/per-model split lines. The tray badge keeps the
+  compact form; a comma costs too much at 16 pixels.
 - The Buy Me a Coffee dialog is now an About TokenTray dialog following the
   WordMD model: app name and version, product-page and GitHub links, then
   the support section. The honor-system unlock and 21-day nag cadence are

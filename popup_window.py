@@ -520,7 +520,7 @@ class PopupWindow(QWidget):
         table.setRowCount(len(rows))
         for r, (name, totals) in enumerate(rows):
             name_item = QTableWidgetItem(name or UNKNOWN_LABEL)
-            tokens_item = QTableWidgetItem(fmt_tokens(totals.total))
+            tokens_item = QTableWidgetItem(fmt_tokens(totals.total, grouped=True))
             turns_item = QTableWidgetItem(f"{totals.events:,}")
             tokens_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -565,12 +565,12 @@ class PopupWindow(QWidget):
         prepared by the tray where the raw events live; ``tool_tooltip``
         carries the skipped-line diagnostics.
         """
-        self._stat_total.set_value(fmt_tokens(today.total))
-        self._stat_in.set_value(fmt_tokens(today.input_tokens))
-        self._stat_out.set_value(fmt_tokens(today.output_tokens))
-        self._stat_cache.set_value(fmt_tokens(today.cache_read_tokens))
+        self._stat_total.set_value(fmt_tokens(today.total, grouped=True))
+        self._stat_in.set_value(fmt_tokens(today.input_tokens, grouped=True))
+        self._stat_out.set_value(fmt_tokens(today.output_tokens, grouped=True))
+        self._stat_cache.set_value(fmt_tokens(today.cache_read_tokens, grouped=True))
         self._stat_sessions.set_value(str(len(today.sessions)))
-        self._stat_events.set_value(str(today.events))
+        self._stat_events.set_value(f"{today.events:,}")
         self._tool_split_lbl.setText(tool_line or "")
         self._tool_split_lbl.setToolTip(tool_tooltip or "")
         self._updated_lbl.setText("Updated " + datetime.now().strftime("%H:%M:%S"))
@@ -617,8 +617,8 @@ class PopupWindow(QWidget):
                 tile.set_value("--")
                 turns_tile.set_value("--")
             else:
-                tile.set_value(fmt_tokens(totals.total))
-                turns_tile.set_value(str(totals.events))
+                tile.set_value(fmt_tokens(totals.total, grouped=True))
+                turns_tile.set_value(f"{totals.events:,}")
 
     def _render_chart(self, buckets: Sequence[Any]) -> None:
         self._chart.removeAllSeries()

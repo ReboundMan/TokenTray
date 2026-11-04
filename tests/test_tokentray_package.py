@@ -273,3 +273,10 @@ def test_bucket_helpers_still_work_via_package_path():
     assert fmt_tokens(35) == "35"
     assert fmt_tokens(1234) == "1.2k"
     assert fmt_tokens(12345) == "12k"
+    # grouped=True adds a thousands separator only where four-digit
+    # integer groups exist (the >= 10M branch); the tray badge keeps the
+    # ungrouped default.
+    assert fmt_tokens(13_974_000_000) == "13974M"
+    assert fmt_tokens(13_974_000_000, grouped=True) == "13,974M"
+    assert fmt_tokens(41_000_000, grouped=True) == "41M"
+    assert fmt_tokens(1234, grouped=True) == "1.2k"

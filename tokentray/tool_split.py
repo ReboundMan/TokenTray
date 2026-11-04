@@ -30,7 +30,7 @@ def tool_split_line(events, *, claude_dir_exists: bool | None = None, now=None) 
         host = ev.host_app or "Unknown"
         totals[host] = totals.get(host, 0) + ev.total
     parts = [
-        f"{host} {fmt_tokens(n)}"
+        f"{host} {fmt_tokens(n, grouped=True)}"
         for host, n in sorted(totals.items(), key=lambda kv: -kv[1])
     ]
     if "Claude Code" not in totals:
@@ -64,5 +64,5 @@ def tool_split_tooltip(claude_cache, events, *, now=None) -> str:
     if by_model:
         lines.append("Today by model:")
         for model, n in sorted(by_model.items(), key=lambda kv: -kv[1]):
-            lines.append(f"  {model}  {fmt_tokens(n)}")
+            lines.append(f"  {model}  {fmt_tokens(n, grouped=True)}")
     return "\n".join(lines)
