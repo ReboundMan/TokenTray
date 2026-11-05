@@ -302,3 +302,48 @@ def test_show_near_resets_to_today_tab(popup, qapp):
         "show_near() must reset the active tab to Today on every open"
     )
     popup.hide()
+
+
+def test_chart_bar_hover_shows_day_total_tooltip(popup, qapp, monkeypatch):
+    """Hovering a day's bar surfaces that day's full totals as a tooltip."""
+    from datetime import date
+
+    import popup_window as pw_mod
+    from usage_core import DayBucket
+
+    buckets = [
+        DayBucket(day=date(2026, 11, 3), input_tokens=1_234,
+                  output_tokens=307_000, cache_read_tokens=48_000_000,
+                  events=45, sessions={"s1", "s2"}),
+        DayBucket(day=date(2026, 11, 4), input_tokens=4,
+                  output_tokens=787, cache_read_tokens=366_000_000,
+                  events=2, sessions={"s3"}),
+    ]
+    popup._render_chart(buckets)
+    assert len(popup._chart_buckets) == 2
+
+    shown: list[str] = []
+    monkeypatch.setattr(
+        pw_mod.QToolTip, "showText",
+        lambda pos, text, *a: shown.append(text),
+    )
+    hidden: list[bool] = []
+    monkeypatch.setattr(
+        pw_mod.QToolTip, "hideText", lambda: hidden.append(True)
+    )
+
+    popup._on_bar_hovered(True, 1)
+    assert len(shown) == 1
+    tip = shown[0]
+    assert "11/4" in tip
+    assert "366,001" in tip or "366,000,791" in tip  # exact total, grouped
+    assert "Cached in: 366,000,000" in tip
+    assert "Uncached in: 4" in tip
+    assert "Output: 787" in tip
+    assert "Turns: 2" in tip
+
+    # Hover-leave and out-of-range indexes hide rather than crash.
+    popup._on_bar_hovered(False, 1)
+    popup._on_bar_hovered(True, 99)
+    assert len(hidden) == 2
+    assert len(shown) == 1

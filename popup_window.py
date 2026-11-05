@@ -13,7 +13,7 @@ from PyQt6.QtCharts import (
     QValueAxis,
 )
 from PyQt6.QtCore import QEvent, QMargins, Qt
-from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
+from PyQt6.QtGui import QBrush, QColor, QCursor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -653,6 +654,11 @@ class PopupWindow(QWidget):
         stacked.append(set_in)
         stacked.append(set_out)
         stacked.setLabelsVisible(False)
+        # Hovering any segment of a day's bar shows that whole day's
+        # breakdown; the per-set segments are too thin to tooltip
+        # individually and the user's question is "what did that day cost".
+        self._chart_buckets = list(buckets)
+        stacked.hovered.connect(self._on_bar_hovered)
         self._chart.addSeries(stacked)
 
         ax_x = QBarCategoryAxis()
@@ -677,6 +683,23 @@ class PopupWindow(QWidget):
         self._chart.addAxis(ax_y, Qt.AlignmentFlag.AlignLeft)
         stacked.attachAxis(ax_x)
         stacked.attachAxis(ax_y)
+
+    def _on_bar_hovered(self, status: bool, index: int, barset=None) -> None:
+        """Day-total tooltip for the 7-day chart bars."""
+        buckets = getattr(self, "_chart_buckets", [])
+        if not status or not (0 <= index < len(buckets)):
+            QToolTip.hideText()
+            return
+        b = buckets[index]
+        text = (
+            f"{b.label}\n"
+            f"Total: {fmt_tokens(b.total, grouped=True)} ({b.total:,} tokens)\n"
+            f"Cached in: {b.cache_read_tokens:,}\n"
+            f"Uncached in: {b.input_tokens:,}\n"
+            f"Output: {b.output_tokens:,}\n"
+            f"Turns: {b.events:,}  Sessions: {len(b.sessions)}"
+        )
+        QToolTip.showText(QCursor.pos(), text, self._chart_view)
 
     # ------------------------------------------------------------------
     def show_near(self, anchor_global_pos) -> None:
