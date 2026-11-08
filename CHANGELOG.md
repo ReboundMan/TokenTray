@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-08
+
 ### Added
 - Hovering a bar in the 7-day chart shows that day's breakdown as a
   tooltip: compact and exact totals, cached/uncached/output split, turns,
