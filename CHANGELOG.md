@@ -11,10 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The tray icon's loading tooltip still said "Copilot CLI tokens"; it now
   says "TokenTray: token usage", and the steady-state hover tooltip leads
   with the app name.
-- The chart hover tooltip vanished in under a second: QToolTip shown
-  without an anchor rect hides on the first cursor movement. It now stays
-  up while the cursor is over the chart (up to 60 seconds), hides when
-  leaving the bar, and is replaced in place when hovering another bar.
+- The chart hover tooltip vanished in under a second, for two stacked
+  reasons: QToolTip shown without an anchor rect hides on the first cursor
+  movement, and even anchored, Qt's dwell-triggered ToolTip event hides a
+  manual tip when the widget under the cursor has no tooltip text of its
+  own. The hover now also sets the text on the chart view, so the dwell
+  re-shows instead of hiding. The tip persists while the cursor sits on
+  the bar, hides on leaving it, and is replaced when hovering another bar.
 
 ## [1.0.2] - 2026-11-08
 

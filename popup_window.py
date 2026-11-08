@@ -688,6 +688,7 @@ class PopupWindow(QWidget):
         """Day-total tooltip for the 7-day chart bars."""
         buckets = getattr(self, "_chart_buckets", [])
         if not status or not (0 <= index < len(buckets)):
+            self._chart_view.setToolTip("")
             QToolTip.hideText()
             return
         b = buckets[index]
@@ -699,14 +700,18 @@ class PopupWindow(QWidget):
             f"Output: {b.output_tokens:,}\n"
             f"Turns: {b.events:,}  Sessions: {len(b.sessions)}"
         )
-        # The rect argument is what makes the tip persist: with a null rect,
-        # QToolTip hides on the first cursor movement, and a hand is never
-        # perfectly still, so the tip died in under a second. Anchored to the
-        # whole chart view, it stays up while the cursor is over the chart;
-        # leaving the bar fires hovered(False) above, which hides it, and
-        # hovering another bar replaces the text in place. The explicit
-        # display time outlasts any plausible read (the length-based default
-        # is ~10s).
+        # Persistence has bitten twice here, two different ways:
+        #   Round 1: a null rect hides the tip on the first cursor movement,
+        #   and a hand is never perfectly still (died in <1s).
+        #   Round 2: even with a rect, Qt's own tooltip machinery delivers a
+        #   QEvent.ToolTip to the widget under a DWELLING cursor after about
+        #   a second, and a widget whose toolTip() is empty HIDES any visible
+        #   tip at that moment. Setting the text on the chart view itself
+        #   turns that same dwell event into a re-show instead of a hide, so
+        #   the tip now persists while the cursor sits on the bar.
+        # hovered(False) above clears both the widget text and the tip when
+        # the cursor leaves the bar; hovering another bar replaces the text.
+        self._chart_view.setToolTip(text)
         QToolTip.showText(
             QCursor.pos(), text, self._chart_view,
             self._chart_view.rect(), 60_000,

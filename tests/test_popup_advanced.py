@@ -335,6 +335,11 @@ def test_chart_bar_hover_shows_day_total_tooltip(popup, qapp, monkeypatch):
 
     popup._on_bar_hovered(True, 1)
     assert len(shown) == 1
+    # Regression guard, persistence round 2: Qt delivers QEvent.ToolTip to
+    # the widget under a dwelling cursor after ~1s, and a widget with an
+    # EMPTY toolTip() hides any visible tip then. The hover must therefore
+    # also set the text on the chart view itself (and clear it on leave).
+    assert popup._chart_view.toolTip() == shown[0]
     tip = shown[0]
     assert "11/4" in tip
     assert "366,001" in tip or "366,000,791" in tip  # exact total, grouped
@@ -350,8 +355,11 @@ def test_chart_bar_hover_shows_day_total_tooltip(popup, qapp, monkeypatch):
     assert not rect.isNull()
     assert msec >= 10_000
 
-    # Hover-leave and out-of-range indexes hide rather than crash.
+    # Hover-leave and out-of-range indexes hide rather than crash, and the
+    # widget-level text must be cleared so the dwell event cannot re-show a
+    # stale tip over empty chart area.
     popup._on_bar_hovered(False, 1)
+    assert popup._chart_view.toolTip() == ""
     popup._on_bar_hovered(True, 99)
     assert len(hidden) == 2
     assert len(shown) == 1
