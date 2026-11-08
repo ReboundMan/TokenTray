@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-08
+
 ### Fixed
 - The tray icon's loading tooltip still said "Copilot CLI tokens"; it now
   says "TokenTray: token usage", and the steady-state hover tooltip leads

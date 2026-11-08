@@ -12,7 +12,7 @@
 ; ============================================================================
 
 #define MyAppName        "TokenTray"
-#define MyAppVersion     "1.0.2"
+#define MyAppVersion     "1.0.3"
 #define MyAppPublisher   "Jeff James"
 #define MyAppURL         "https://github.com/ReboundMan/TokenTray"
 #define MyAppExeName     "TokenTray.exe"
