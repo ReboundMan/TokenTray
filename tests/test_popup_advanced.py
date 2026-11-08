@@ -323,9 +323,10 @@ def test_chart_bar_hover_shows_day_total_tooltip(popup, qapp, monkeypatch):
     assert len(popup._chart_buckets) == 2
 
     shown: list[str] = []
+    show_args: list[tuple] = []
     monkeypatch.setattr(
         pw_mod.QToolTip, "showText",
-        lambda pos, text, *a: shown.append(text),
+        lambda pos, text, *a: (shown.append(text), show_args.append(a)),
     )
     hidden: list[bool] = []
     monkeypatch.setattr(
@@ -341,6 +342,13 @@ def test_chart_bar_hover_shows_day_total_tooltip(popup, qapp, monkeypatch):
     assert "Uncached in: 4" in tip
     assert "Output: 787" in tip
     assert "Turns: 2" in tip
+    # Regression guard: without an anchor rect + explicit display time,
+    # QToolTip hides on the first cursor movement (died in under a second
+    # in v1.0.2). The call must pass widget, rect, and duration.
+    w, rect, msec = show_args[0]
+    assert w is popup._chart_view
+    assert not rect.isNull()
+    assert msec >= 10_000
 
     # Hover-leave and out-of-range indexes hide rather than crash.
     popup._on_bar_hovered(False, 1)

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The chart hover tooltip vanished in under a second: QToolTip shown
+  without an anchor rect hides on the first cursor movement. It now stays
+  up while the cursor is over the chart (up to 60 seconds), hides when
+  leaving the bar, and is replaced in place when hovering another bar.
+
 ## [1.0.2] - 2026-11-08
 
 ### Added

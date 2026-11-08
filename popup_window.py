@@ -699,7 +699,18 @@ class PopupWindow(QWidget):
             f"Output: {b.output_tokens:,}\n"
             f"Turns: {b.events:,}  Sessions: {len(b.sessions)}"
         )
-        QToolTip.showText(QCursor.pos(), text, self._chart_view)
+        # The rect argument is what makes the tip persist: with a null rect,
+        # QToolTip hides on the first cursor movement, and a hand is never
+        # perfectly still, so the tip died in under a second. Anchored to the
+        # whole chart view, it stays up while the cursor is over the chart;
+        # leaving the bar fires hovered(False) above, which hides it, and
+        # hovering another bar replaces the text in place. The explicit
+        # display time outlasts any plausible read (the length-based default
+        # is ~10s).
+        QToolTip.showText(
+            QCursor.pos(), text, self._chart_view,
+            self._chart_view.rect(), 60_000,
+        )
 
     # ------------------------------------------------------------------
     def show_near(self, anchor_global_pos) -> None:
