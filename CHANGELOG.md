@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The tray icon's loading tooltip still said "Copilot CLI tokens"; it now
+  says "TokenTray: token usage", and the steady-state hover tooltip leads
+  with the app name.
 - The chart hover tooltip vanished in under a second: QToolTip shown
   without an anchor rect hides on the first cursor movement. It now stays
   up while the cursor is over the chart (up to 60 seconds), hides when

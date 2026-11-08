@@ -1,4 +1,4 @@
-"""TokenUsageTray -- systray app for live Copilot CLI token usage."""
+"""TokenTray -- systray app for live AI token usage (Copilot CLI, Agency, Claude Code)."""
 from __future__ import annotations
 
 import sys
@@ -49,7 +49,7 @@ class TrayApp:
 
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(make_badge_icon("…"))
-        self.tray.setToolTip("Copilot CLI tokens (loading…)")
+        self.tray.setToolTip("TokenTray: token usage (loading…)")
 
         menu = QMenu()
         act_show = QAction("Show details", menu)
@@ -343,6 +343,7 @@ class TrayApp:
             badge = fmt_tokens(today.total) if today.total else "0"
             self.tray.setIcon(make_badge_icon(badge))
             tip = (
+                "TokenTray\n"
                 f"Today: {today.total:,} tokens "
                 f"({today.events} turns, {len(today.sessions)} sessions)\n"
                 f"Updated {datetime.now().strftime('%H:%M:%S')}"
